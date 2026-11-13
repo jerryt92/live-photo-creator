@@ -63,6 +63,8 @@ export interface HevcStill {
   irot?: number
   /** 有则写入 HEIC 的 colr nclx（HDR 封面保留源色彩）。 */
   colr?: HevcColorInfo
+  /** 该帧在视频中的实际呈现时刻（秒）；比特级抽取的关键帧用于对齐 still-image-time。 */
+  timeSeconds?: number
 }
 
 /** 合成结果。 */

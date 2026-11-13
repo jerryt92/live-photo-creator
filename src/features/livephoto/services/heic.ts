@@ -150,11 +150,12 @@ interface HeifItem {
 }
 
 function colrBox(color: HevcColorInfo): Uint8Array {
+  // ISOBMFF/HEIF nclx：primaries/transfer/matrix 各 u16 + range 标志（libheif 按 16 位解析）。
   return box('colr', new ByteWriter()
     .fourCC('nclx')
-    .u8(color.primaries)
-    .u8(color.transfer)
-    .u8(color.matrix)
+    .u16(color.primaries)
+    .u16(color.transfer)
+    .u16(color.matrix)
     .u8(color.fullRange ? 0x80 : 0)
     .build())
 }
@@ -186,9 +187,10 @@ function imageMetadata(still: HevcStill, items: HeifItem[], dataOffset: number):
     essential.push(0x84)
   }
   // irot 为非 essential 的显示旋转声明（iPhone 旋转矩阵）。
+  // ISO 23008-12 §6.5.10：角度存于低 2 位（0..3，逆时针 90° 倍数），高 6 位保留为 0。
   const optional: number[] = []
   if (still.irot) {
-    properties.push(box('irot', Uint8Array.of((still.irot & 3) << 6)))
+    properties.push(box('irot', Uint8Array.of(still.irot & 3)))
     optional.push(properties.length)
   }
   const associations = fullBox('ipma', 0, new ByteWriter()

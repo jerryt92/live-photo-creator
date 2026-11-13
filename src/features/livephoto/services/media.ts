@@ -9,7 +9,8 @@ import { encodeStill, hdrColorInfo, type HevcStill } from './heic'
 import { LivePhotoMakerError, MAX_VIDEO_DURATION, type CaptureMetadata, type MediaItem } from '../models'
 export type { DecodedPhoto }
 
-const REMUXABLE_VIDEO_CODECS = new Set(['avc1', 'avc3', 'hvc1', 'hev1'])
+/** 可比特级搬运的视频编码（含 Dolby Vision dvh1/dvhe，HDR 原样保留）。 */
+export const REMUXABLE_VIDEO_CODECS = new Set(['avc1', 'avc3', 'hvc1', 'hev1', 'dvh1', 'dvhe'])
 
 export interface VideoAnalysis {
   file: File
@@ -20,6 +21,8 @@ export interface VideoAnalysis {
   previewUrl?: string
   /** 可直接重封装（H.264/HEVC + AAC 的 MP4/MOV）。 */
   remuxable: boolean
+  /** 视频轨可比特级搬运（音频可能仍需转码）；HDR 保真的关键判定。 */
+  videoCopyable: boolean
   movie?: MovieInfo
   /** WebM 等需要走 WebCodecs 转码。 */
   webm: boolean
@@ -101,14 +104,14 @@ async function analyzeIsobmff(file: File): Promise<VideoAnalysis> {
 
   const duration = movie.duration / movie.timescale
   const videoFormat = videoTrack.stsdEntries[0]?.format ?? ''
-  const audioTrack = movie.tracks.find((t) => t.handler === 'soun')
-  const audioFormat = audioTrack?.stsdEntries[0]?.format ?? ''
-  const audioOk = !audioTrack || audioFormat === 'mp4a'
+  const audioTracks = movie.tracks.filter((t) => t.handler === 'soun')
+  // iPhone HDR 视频常带多条音轨（AAC + APAC 空间音频）：只要存在一条 AAC
+  // 即可直接重封装；其余音轨交给混合路径转码，绝不因此把 HDR 视频降级 SDR。
+  const audioOk = audioTracks.length === 0 || audioTracks.some((t) => t.stsdEntries[0]?.format === 'mp4a')
 
-  const remuxable =
+  const videoCopyable =
     !movie.fragmented &&
     REMUXABLE_VIDEO_CODECS.has(videoFormat) &&
-    audioOk &&
     videoTrack.sampleSizes.length > 0 && videoTrack.stts.length > 0 && videoTrack.chunkOffsets.length > 0
 
   return {
@@ -117,7 +120,8 @@ async function analyzeIsobmff(file: File): Promise<VideoAnalysis> {
     width: videoTrack.width,
     height: videoTrack.height,
     metadata: videoMetadata(movie),
-    remuxable,
+    remuxable: videoCopyable && audioOk,
+    videoCopyable,
     movie,
     webm: false,
   }
@@ -145,6 +149,7 @@ async function analyzeWithElement(file: File, webm: boolean): Promise<VideoAnaly
       height: video.videoHeight,
       metadata: {},
       remuxable: false,
+      videoCopyable: false,
       webm,
     }
   } finally {

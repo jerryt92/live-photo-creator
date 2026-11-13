@@ -7,43 +7,43 @@
 import { ByteReader, concatBytes } from './bytes'
 import { expandSamples, findBox, parseBoxes, type TrackInfo } from './mp4'
 import type { HevcColorInfo, HevcStill } from '../models'
+import { findDolbyVisionConfig, hdrColorFromDolbyVision } from './hevc'
 
 /**
- * 解析样本描述内的 colr/nclx，兼容两种字段宽度：
- * ISO BMFF（primaries/transfer/matrix/range 各 u8）与
- * QuickTime（前三项各 u16，共 6 字节，无 range 字段 → 有限范围）。
+ * 读取标准 nclx 和 QuickTime nclc，也接受旧文件中的短 nclx 布局。
  */
 export function parseColrNclx(entryRaw: Uint8Array): HevcColorInfo | undefined {
   const boxes = parseBoxes(entryRaw, 86)
   const colr = findBox(boxes, 'colr')
-  if (!colr) return undefined
-  if (entryRaw[colr.start + 8] !== 0x6e) return undefined // 'nclx'
+  if (!colr || colr.size < 12) return undefined
+  const r = new ByteReader(entryRaw, colr.start + 8)
+  const type = r.fourCC()
   const rest = colr.size - 8 - 4
-  const r = new ByteReader(entryRaw, colr.start + 12)
+  if (type !== 'nclx' && type !== 'nclc') return undefined
   let primaries: number, transfer: number, matrix: number, fullRange = false
-  if (rest >= 6) {
+  if (rest === 6 || (type === 'nclx' && rest === 7)) {
     primaries = r.u16()
     transfer = r.u16()
     matrix = r.u16()
     if (rest >= 7) fullRange = (r.u8() & 0x80) !== 0
-  } else {
+  } else if (type === 'nclx' && rest === 4) {
     primaries = r.u8()
     transfer = r.u8()
     matrix = r.u8()
     fullRange = (r.u8() & 0x80) !== 0
+  } else {
+    return undefined
   }
   if (primaries !== 9) return undefined
   if (transfer !== 16 && transfer !== 18) return undefined
   return { primaries, transfer, matrix, fullRange }
 }
 
-/**
- * hvcC 位深：configurationVersion(0)、profile(1) 低 5 位。
- * Main10（profile 2）及以上 → 10-bit；Main/MainStill(1/3) → 8-bit。
- * （直接读 bit_depth_luma_minus8 字段在厂商实现间偏移不一，profile 更可靠。）
- */
+/** hvcC 的 bitDepthLumaMinus8 位于配置记录第 18 字节的低三位。 */
 export function hvcCBitDepth(payload: Uint8Array): number {
-  if (payload[0] !== 1) return 8
+  if (payload[0] !== 1 || payload.length < 23) return 8
+  if ((payload[17] & 0xf8) === 0xf8) return 8 + (payload[17] & 7)
+  // 兼容未填写保留位的旧配置记录。
   const profile = payload[1] & 0x1f
   return profile === 2 || profile >= 4 ? 10 : 8
 }
@@ -98,8 +98,13 @@ export async function extractHevcKeyframe(
 ): Promise<HevcStill | undefined> {
   try {
     const entry = track.stsdEntries[0]
-    if (!entry || entry.format !== 'hvc1') return undefined
-    const colr = parseColrNclx(entry.raw)
+    if (!entry || !['hvc1', 'hev1', 'dvh1', 'dvhe'].includes(entry.format)) return undefined
+    let colr = parseColrNclx(entry.raw)
+    if (!colr) {
+      // 无 colr 的 Dolby Vision：由兼容基底 id 推导 HLG/PQ。
+      const dv = findDolbyVisionConfig(entry.raw)
+      if (dv) colr = hdrColorFromDolbyVision(dv.info)
+    }
     if (!colr) return undefined // SDR 源走原管线
 
     const hvcC = findBox(parseBoxes(entry.raw, 86), 'hvcC')
@@ -162,6 +167,9 @@ export async function extractHevcKeyframe(
       sample: concatBytes(nalUnits),
       bitDepth,
       irot: irot || undefined,
+      // 关键帧可能相对所选时刻吸附（≤0.25s）：回报真实呈现时刻，
+      // 让 still-image-time 与封面帧严格对齐，循环播放锚点不漂移。
+      timeSeconds: pts[best] / track.timescale,
     }
   } catch (e) {
     if (typeof console !== 'undefined') console.warn('[hevc-still] extraction failed:', e)

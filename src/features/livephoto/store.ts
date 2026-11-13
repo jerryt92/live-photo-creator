@@ -26,6 +26,8 @@ export interface MakerState {
   progress: number
   errorCode: MakerErrorCode | null
   result: LivePhotoBuild | null
+  /** 封面在视频中的锚点时刻（秒）；自定义照片为 undefined。预览播放与 still-image-time 共用。 */
+  coverTime: number | undefined
 }
 
 const state = reactive<MakerState>({
@@ -37,11 +39,11 @@ const state = reactive<MakerState>({
   progress: 0,
   errorCode: null,
   result: null,
+  coverTime: undefined,
 })
 
 let decodedPhoto: DecodedPhoto | null = null
 let videoAnalysis: VideoAnalysis | null = null
-let coverTime: number | undefined
 /** 自动封面在途记录：同一视频去重；换视频后旧结果自动作废（见 setVideoCover）。 */
 let autoCoverFile: File | null = null
 
@@ -71,7 +73,7 @@ export function useMaker() {
       clearResult()
       state.photo = item
       decodedPhoto = decoded
-      coverTime = undefined
+      state.coverTime = undefined
     } catch (e) {
       state.errorCode = e instanceof LivePhotoMakerError ? e.code : 'photoUnreadable'
     } finally {
@@ -106,7 +108,9 @@ export function useMaker() {
       if (automatic && (state.photo || state.video?.file !== sourceFile)) return
       clearResult()
       decodedPhoto = decoded
-      coverTime = time
+      // 比特级抽取的关键帧可能吸附到邻近 IDR：用其真实时刻作锚点，
+      // 保证封面帧与 still-image-time / 播放锚点严格一致；否则用所选时刻。
+      state.coverTime = prebuilt?.timeSeconds ?? time
       state.photo = item
     } catch {
       if (!automatic) state.errorCode = 'photoUnreadable'
@@ -144,10 +148,10 @@ export function useMaker() {
       clearResult()
       state.video = item
       videoAnalysis = analysis
-      if (!state.photo || coverTime !== undefined) {
+      if (!state.photo || state.coverTime !== undefined) {
         state.photo = null
         decodedPhoto = null
-        coverTime = undefined
+        state.coverTime = undefined
       }
       // 缩略图异步抓取，不阻塞导入（HEVC 在部分浏览器无法解码时静默降级）
       void captureVideoThumbnail(file, analysis.duration).then((url) => {
@@ -164,7 +168,7 @@ export function useMaker() {
     if (isWorking.value) return
     state.photo = null
     decodedPhoto = null
-    coverTime = undefined
+    state.coverTime = undefined
     clearResult()
   }
 
@@ -172,7 +176,7 @@ export function useMaker() {
     if (isWorking.value) return
     state.video = null
     videoAnalysis = null
-    if (coverTime !== undefined) removePhoto()
+    if (state.coverTime !== undefined) removePhoto()
     clearResult()
   }
 
@@ -187,7 +191,7 @@ export function useMaker() {
         video: state.video,
         analysis: videoAnalysis,
         metadataSource: state.metadataSource,
-        coverTime,
+        coverTime: state.coverTime,
         onProgress: ({ phase, progress }) => {
           state.phase = phase
           state.progress = progress

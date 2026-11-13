@@ -52,11 +52,11 @@ export async function buildLivePhoto(opts: BuildOptions): Promise<LivePhotoBuild
     tracks = []
     let trackId = 0
     for (const handler of ['vide', 'soun'] as const) {
-      const track = movie.tracks.find((t) => t.handler === handler)
+      // 音频选第一条 AAC 轨（iPhone HDR 视频可能把 APAC 空间音频排在前面）。
+      const track = handler === 'soun'
+        ? movie.tracks.find((t) => t.handler === 'soun' && t.stsdEntries[0]?.format === 'mp4a')
+        : movie.tracks.find((t) => t.handler === handler)
       if (!track) continue
-      if (handler === 'soun' && track.stsdEntries[0]?.format !== 'mp4a') {
-        throw new LivePhotoMakerError('audioUnsupported')
-      }
       if (!track.stsdEntries[0]) continue
       const copied = copyMovieTrack(track, handler, trackId + 1)
       if (handler === 'soun' && copied.samples.length === 0) {
@@ -79,8 +79,9 @@ export async function buildLivePhoto(opts: BuildOptions): Promise<LivePhotoBuild
     duration = result.duration
   }
 
-  // still-image-time 指向视频中段（与 iOS 端一致）。
-  const stillTimeSeconds = Math.min(opts.coverTime ?? duration * 0.5, Math.max(0, duration - 1 / movieTimescale))
+  // still-image-time 贴合所选封面时刻；未指定封面位置（如自定义照片）时取开头。
+  // 与 iOS 端 LivePhotoBuilder 统一：封面即关键帧，循环播放锚点与封面一致。
+  const stillTimeSeconds = Math.min(Math.max(opts.coverTime ?? 0, 0), Math.max(0, duration - 1 / movieTimescale))
   const { header, blob: videoBlob } = buildMovieBlob(
     { movieTimescale, tracks, identifier, stillTimeSeconds, createdAt },
     analysis.file,

@@ -1,13 +1,24 @@
 /**
- * WebCodecs 转码兜底：WebM（VP8/VP9/AV1 + Opus）或 MP4 中不可直接重封装的
- * 编码，先解码再编码为 H.264 + AAC，交给 MOV 重封装器写入。
- * 不支持 WebCodecs 的环境抛出 videoUnsupported。
+ * 视频/音频导出管线，HDR 保真优先：
+ *
+ * 1. 可比特级搬运的视频（H.264/HEVC/Dolby Vision）绝不转码——直接重封装，
+ *    HDR（BT.2020 HLG/PQ 10-bit）原样保留；兼容基底的 Dolby Vision 剥离
+ *    RPU 还原为标准 hvc1 HLG/PQ。音频优先复制 AAC，否则仅转码音频。
+ * 2. 必须转码时（WebM、不可搬运编码）：HDR 帧优先编码 HEVC Main10 保留
+ *    高动态范围，编码器不支持才回退 H.264 SDR。音频转 AAC。
+ *
+ * 不支持 WebCodecs 且无法重封装的环境抛出 videoUnsupported。
  */
 import { ByteWriter, concatBytes } from './bytes'
-import { expandSamples, type MovieInfo } from './mp4'
+import { expandSamples, findBox, parseBoxes, type MovieInfo, type TrackInfo } from './mp4'
 import { copyMovieTrack, type MovSample, type MovTrackInput } from './mov'
 import type { VideoAnalysis } from './media'
-import { LivePhotoMakerError } from '../models'
+import { LivePhotoMakerError, type HevcColorInfo } from '../models'
+import {
+  buildHvc1Entry, findDolbyVisionConfig, hdrColorFromDolbyVision, isConvertibleDolbyVision,
+  nclxBox, sampleHasRpu, stripRpu,
+} from './hevc'
+import { encodeStill, hdrColorInfo } from './heic'
 
 const TIMESCALE = 600
 
@@ -440,6 +451,12 @@ export async function transcodeToTracks(
   analysis: VideoAnalysis,
   onProgress?: (fraction: number) => void,
 ): Promise<TranscodeResult> {
+  // 首选混合重封装：视频比特级搬运（HDR 原样保留），仅音频按需转码。
+  // 这条路径不做任何视频转码，是 HDR 源保真的关键。
+  if (analysis.movie && analysis.videoCopyable) {
+    return remuxCopyableVideo(analysis, onProgress)
+  }
+
   if (typeof VideoDecoder === 'undefined' || typeof VideoEncoder === 'undefined') {
     throw new LivePhotoMakerError('videoUnsupported')
   }
@@ -551,8 +568,39 @@ export async function transcodeToTracks(
   }
 
   async function transcodeVideo(): Promise<MovTrackInput> {
+    const w = width || 640
+    const h = height || 360
+
+    // HDR 探测：解码首帧读原生色彩空间。HDR（BT.2020 HLG/PQ）且 HEVC Main10
+    // 编码器真实可用时保 HDR；否则回退 H.264 SDR。单帧试编码带超时保护，
+    // 规避 WebKit VideoEncoder 对 HDR 帧挂起的问题。
+    let hdrColr: HevcColorInfo | undefined
+    let hevcConfig: VideoEncoderConfig | undefined
+    const firstFrame = await decodeFirstFrame(decoderConfig, videoPackets[0])
+    if (firstFrame) {
+      hdrColr = hdrColorInfo(firstFrame.colorSpace)
+      if (hdrColr) {
+        const candidate: VideoEncoderConfig = {
+          codec: 'hvc1.2.4.L153.B0',
+          width: w,
+          height: h,
+          bitrate: Math.min(25_000_000, Math.max(8_000_000, Math.round(w * h * 30 * 0.1))),
+          framerate: 30,
+          latencyMode: 'quality',
+        }
+        try {
+          await encodeStill(firstFrame, candidate, hdrColr, 10)
+          hevcConfig = candidate
+        } catch {
+          hevcConfig = undefined
+        }
+      }
+      firstFrame.close()
+    }
+    const useHevc = !!hevcConfig && !!hdrColr
+
     const encodedVideo: EncodedSample[] = []
-    let avcC: Uint8Array | undefined
+    let codecDesc: Uint8Array | undefined
     let done = 0
 
     const videoEncoder = new VideoEncoder({
@@ -566,21 +614,25 @@ export async function transcodeToTracks(
           isKey: chunk.type === 'key',
         })
         const desc = metadata?.decoderConfig?.description
-        if (desc && !avcC) {
-          avcC = desc instanceof Uint8Array ? desc : new Uint8Array(desc as ArrayBuffer)
+        if (desc && !codecDesc) {
+          codecDesc = desc instanceof Uint8Array ? desc : new Uint8Array(desc as ArrayBuffer)
         }
       },
       error: () => {},
     })
-    videoEncoder.configure({
-      codec,
-      width: width || 640,
-      height: height || 360,
-      bitrate,
-      framerate: 30,
-      avc: { format: 'avc' },
-      latencyMode: 'quality',
-    })
+    if (useHevc) {
+      videoEncoder.configure(hevcConfig!)
+    } else {
+      videoEncoder.configure({
+        codec,
+        width: w,
+        height: h,
+        bitrate,
+        framerate: 30,
+        avc: { format: 'avc' },
+        latencyMode: 'quality',
+      })
+    }
 
     let decodeError: Error | undefined
     const videoDecoder = new VideoDecoder({
@@ -620,19 +672,324 @@ export async function transcodeToTracks(
     videoDecoder.close()
     await videoEncoder.flush()
     videoEncoder.close()
-    if (decodeError || encodedVideo.length === 0 || !avcC) {
+    if (decodeError || encodedVideo.length === 0 || !codecDesc) {
       throw new LivePhotoMakerError('videoUnsupported')
     }
 
+    const sampleEntry = useHevc
+      ? buildHvc1Entry(w, h, codecDesc, nclxBox(hdrColr!))
+      : avc1Entry(w, h, codecDesc)
     return {
       handler: 'vide',
       trackId: 1,
       timescale: TIMESCALE,
       samples: toMovSamples(encodedVideo),
-      sampleEntry: avc1Entry(width || 640, height || 360, avcC),
-      width: width || 640,
-      height: height || 360,
+      sampleEntry,
+      width: w,
+      height: h,
     }
+  }
+}
+
+/** 解码首个样本取一帧（HDR 探测用）；失败/超时返回 undefined，不影响主管线。 */
+function decodeFirstFrame(
+  config: VideoDecoderConfig,
+  packet: { data: Uint8Array; timestampUs: number; durationUs: number; isKey: boolean } | undefined,
+): Promise<VideoFrame | undefined> {
+  if (!packet) return Promise.resolve(undefined)
+  return new Promise((resolve) => {
+    let settled = false
+    let decoder: VideoDecoder
+    const finish = (frame?: VideoFrame) => {
+      if (settled) {
+        frame?.close()
+        return
+      }
+      settled = true
+      window.clearTimeout(timer)
+      resolve(frame)
+    }
+    const timer = window.setTimeout(() => {
+      finish(undefined)
+      try { decoder.close() } catch { /* already closed */ }
+    }, 5000)
+    decoder = new VideoDecoder({
+      output: (frame) => finish(frame),
+      error: () => finish(undefined),
+    })
+    try {
+      decoder.configure(config)
+      decoder.decode(new EncodedVideoChunk({
+        type: packet.isKey ? 'key' : 'delta',
+        timestamp: packet.timestampUs,
+        duration: packet.durationUs,
+        data: packet.data,
+      }))
+      void decoder.flush().then(
+        () => { try { decoder.close() } catch { /* noop */ } },
+        () => { try { decoder.close() } catch { /* noop */ } },
+      )
+    } catch {
+      finish(undefined)
+    }
+  })
+}
+
+// ---------------------------------------------------------------- 混合重封装（HDR 保真）
+
+/**
+ * 视频可比特级搬运时的导出：视频零转码（HDR 原样保留，兼容基底的 Dolby
+ * Vision 还原为 hvc1 HLG/PQ），音频优先复制 AAC，否则仅转码音频。
+ * 绝不因音频问题把 HDR 视频降级 SDR。
+ */
+async function remuxCopyableVideo(
+  analysis: VideoAnalysis,
+  onProgress?: (fraction: number) => void,
+): Promise<TranscodeResult> {
+  const movie = analysis.movie!
+  const vTrack = movie.tracks.find((t) => t.handler === 'vide')
+  if (!vTrack) throw new LivePhotoMakerError('videoTrackMissing')
+
+  const videoTrack = await copyVideoTrackPreservingHdr(vTrack, analysis.file)
+  onProgress?.(0.5)
+
+  const audioTracks = movie.tracks.filter((t) => t.handler === 'soun')
+  const aacTrack = audioTracks.find((t) => t.stsdEntries[0]?.format === 'mp4a')
+  let audioTrack: MovTrackInput | undefined
+  if (aacTrack) {
+    const copied = copyMovieTrack(aacTrack, 'soun', 2)
+    if (copied.samples.length > 0) audioTrack = copied
+  } else if (audioTracks.length > 0) {
+    // 无 AAC：尝试把第一条音轨转 AAC；失败则输出无声视频（仍是有效实况照片）。
+    audioTrack = await transcodeMovieAudio(audioTracks[0], analysis.file).catch(() => undefined)
+  }
+  onProgress?.(1)
+
+  return {
+    tracks: audioTrack ? [videoTrack, audioTrack] : [videoTrack],
+    movieTimescale: movie.timescale,
+    duration: movie.duration / movie.timescale,
+  }
+}
+
+/**
+ * 搬运视频轨并保留 HDR。普通 hvc1/hev1/avc1 零拷贝；携带兼容基底 Dolby
+ * Vision 的样本剥离 RPU、去掉 DV 配置 box，还原为标准 hvc1 HLG/PQ。
+ * 不兼容基底（profile 5）原样保留 dvh1/dvhe。
+ */
+async function copyVideoTrackPreservingHdr(track: TrackInfo, file: Blob): Promise<MovTrackInput> {
+  const entry = track.stsdEntries[0]
+  const dv = entry ? findDolbyVisionConfig(entry.raw) : undefined
+  if (!entry || !dv || !isConvertibleDolbyVision(dv.info)) {
+    return copyMovieTrack(track, 'vide', 1)
+  }
+  const children = parseBoxes(entry.raw, 86)
+  const hvcCBox = findBox(children, 'hvcC')
+  if (!hvcCBox) return copyMovieTrack(track, 'vide', 1)
+  const hvcC = entry.raw.slice(hvcCBox.start + 8, hvcCBox.start + hvcCBox.size)
+  const colrBox = findBox(children, 'colr')
+  const color = hdrColorFromDolbyVision(dv.info)
+  const colr = colrBox
+    ? entry.raw.slice(colrBox.start, colrBox.start + colrBox.size)
+    : (color ? nclxBox(color) : undefined)
+  const extras: Uint8Array[] = []
+  for (const type of ['pasp', 'btrt']) {
+    const b = findBox(children, type)
+    if (b) extras.push(entry.raw.slice(b.start, b.start + b.size))
+  }
+  const sampleEntry = buildHvc1Entry(track.width, track.height, hvcC, colr, extras)
+
+  const samples = expandSamples(track)
+  if (samples.length === 0) return copyMovieTrack(track, 'vide', 1)
+  const { data, base } = await readSampleRange(file, samples)
+  const rewritten: MovSample[] = samples.map((s) => {
+    const raw = data.subarray(s.offset - base, s.offset - base + s.size)
+    return { data: sampleHasRpu(raw) ? stripRpu(raw) : raw, duration: s.duration, isKey: s.isKey }
+  })
+  return {
+    handler: 'vide',
+    trackId: 1,
+    timescale: track.timescale,
+    samples: rewritten,
+    sampleEntry,
+    width: track.width,
+    height: track.height,
+    matrix: track.matrix,
+    edits: track.edits,
+    language: track.language,
+    mediaHeaderRaw: track.mediaHeaderRaw,
+    cttsRaw: track.cttsRaw,
+  }
+}
+
+/** 一次性读取样本覆盖的连续区间，返回缓冲与基址（样本按偏移升序）。 */
+async function readSampleRange(
+  file: Blob,
+  samples: { offset: number; size: number }[],
+): Promise<{ data: Uint8Array; base: number }> {
+  const base = samples[0].offset
+  const last = samples[samples.length - 1]
+  const end = last.offset + last.size
+  const data = new Uint8Array(await file.slice(base, end).arrayBuffer())
+  return { data, base }
+}
+
+/** 把一条非 AAC 音轨转成 AAC；PCM 直接构造 AudioData，其余交给 AudioDecoder。 */
+async function transcodeMovieAudio(track: TrackInfo, file: Blob): Promise<MovTrackInput> {
+  const entry = track.stsdEntries[0]
+  const samples = expandSamples(track)
+  if (!entry || samples.length === 0) throw new LivePhotoMakerError('audioUnsupported')
+  const { data, base } = await readSampleRange(file, samples)
+  let t = 0
+  const packets = samples.map((s) => {
+    const p = {
+      data: data.subarray(s.offset - base, s.offset - base + s.size),
+      timestampUs: t,
+      durationUs: (s.duration * 1e6) / track.timescale,
+    }
+    t += p.durationUs
+    return p
+  })
+  const pcm = parsePcmEntry(entry.raw, samples[0].size)
+  if (pcm) return encodePcmToAac(pcm, packets)
+  throw new LivePhotoMakerError('audioUnsupported')
+}
+
+interface PcmFormat {
+  channels: number
+  sampleSize: number
+  sampleRate: number
+  littleEndian: boolean
+}
+
+function isSaneRate(rate: number): boolean {
+  return Number.isFinite(rate) && rate >= 8000 && rate <= 192000
+}
+
+/**
+ * 解析 PCM 样本描述（twos/sowt 标准布局；lpcm 为 Apple 紧凑 v2 布局）。
+ * 声道数优先用「每样本字节数 / 每帧字节数」交叉验证，任何不一致都返回
+ * undefined（调用方降级为无声），绝不输出错误音频。
+ */
+export function parsePcmEntry(entry: Uint8Array, firstSampleBytes: number): PcmFormat | undefined {
+  if (entry.byteLength < 36) return undefined
+  const format = String.fromCharCode(entry[4], entry[5], entry[6], entry[7])
+  const view = new DataView(entry.buffer, entry.byteOffset, entry.byteLength)
+  let channels = 0
+  let sampleSize = 0
+  let sampleRate = 0
+  let littleEndian = false
+  if (format === 'twos' || format === 'sowt') {
+    channels = view.getUint16(0x10)
+    sampleSize = view.getUint16(0x12)
+    sampleRate = view.getUint32(0x18) / 65536
+    littleEndian = format === 'sowt'
+  } else if (format === 'lpcm') {
+    sampleSize = view.getUint16(0x1a)
+    channels = view.getUint16(0x20)
+    littleEndian = view.getUint16(0x1c) === 0xfffe
+    for (let o = 28; o + 12 <= entry.byteLength; o += 4) {
+      if (view.getUint32(o) === entry.byteLength) {
+        sampleRate = view.getFloat64(o + 4)
+        break
+      }
+    }
+    if (!isSaneRate(sampleRate)) sampleRate = view.getUint32(0x18) / 65536
+  } else {
+    return undefined
+  }
+  if (![8, 16, 24, 32].includes(sampleSize) || !isSaneRate(sampleRate)) return undefined
+  // MOV PCM 每样本即一帧：用实际字节数反推声道，覆盖描述中的可疑值。
+  const inferred = firstSampleBytes / (sampleSize / 8)
+  if (Number.isInteger(inferred) && inferred >= 1 && inferred <= 8) channels = inferred
+  if (!(channels >= 1 && channels <= 8)) return undefined
+  return { channels, sampleSize, sampleRate: Math.round(sampleRate), littleEndian }
+}
+
+function swapEndian(data: Uint8Array, width: number): Uint8Array {
+  const out = new Uint8Array(data.byteLength)
+  for (let i = 0; i + width <= data.byteLength; i += width) {
+    for (let j = 0; j < width; j++) out[i + j] = data[i + width - 1 - j]
+  }
+  return out
+}
+
+/** 把一段 PCM 样本构造成 WebCodecs AudioData（24-bit 提升到 s32）。 */
+function pcmToAudioData(data: Uint8Array, pcm: PcmFormat, timestampUs: number): AudioData | undefined {
+  const bytesPerSample = pcm.sampleSize / 8
+  const numberOfFrames = Math.floor(data.byteLength / (bytesPerSample * pcm.channels))
+  if (numberOfFrames <= 0) return undefined
+  const base = { sampleRate: pcm.sampleRate, numberOfFrames, numberOfChannels: pcm.channels, timestamp: timestampUs }
+  if (pcm.sampleSize === 16) {
+    const buf = pcm.littleEndian ? data : swapEndian(data, 2)
+    return new AudioData({ ...base, format: 's16', data: buf })
+  }
+  if (pcm.sampleSize === 32) {
+    const buf = pcm.littleEndian ? data : swapEndian(data, 4)
+    return new AudioData({ ...base, format: 's32', data: buf })
+  }
+  if (pcm.sampleSize === 8) {
+    return new AudioData({ ...base, format: 'u8', data })
+  }
+  if (pcm.sampleSize === 24) {
+    const out = new DataView(new ArrayBuffer(numberOfFrames * pcm.channels * 4))
+    let o = 0
+    for (let i = 0; i + 3 <= data.byteLength; i += 3) {
+      let v = pcm.littleEndian
+        ? data[i] | (data[i + 1] << 8) | (data[i + 2] << 16)
+        : (data[i] << 16) | (data[i + 1] << 8) | data[i + 2]
+      if (v & 0x800000) v |= ~0xffffff
+      out.setInt32(o, v << 8, true)
+      o += 4
+    }
+    return new AudioData({ ...base, format: 's32', data: new Uint8Array(out.buffer) })
+  }
+  return undefined
+}
+
+/** PCM → AAC（不经过 AudioDecoder，直接构造 AudioData 编码）。 */
+async function encodePcmToAac(
+  pcm: PcmFormat,
+  packets: { data: Uint8Array; timestampUs: number; durationUs: number }[],
+): Promise<MovTrackInput> {
+  if (typeof AudioEncoder === 'undefined') throw new LivePhotoMakerError('audioUnsupported')
+  const encoded: EncodedSample[] = []
+  let asc: Uint8Array | undefined
+  let failed = false
+  const encoder = new AudioEncoder({
+    output: (chunk, metadata) => {
+      const data = new Uint8Array(chunk.byteLength)
+      chunk.copyTo(data)
+      encoded.push({ data, timestampUs: chunk.timestamp, durationUs: chunk.duration ?? 23220, isKey: true })
+      const desc = metadata?.decoderConfig?.description
+      if (desc && !asc) asc = desc instanceof Uint8Array ? desc : new Uint8Array(desc as ArrayBuffer)
+    },
+    error: () => { failed = true },
+  })
+  try {
+    encoder.configure({ codec: 'mp4a.40.2', sampleRate: pcm.sampleRate, numberOfChannels: pcm.channels, bitrate: 128000 })
+    for (const p of packets) {
+      if (failed) break
+      const audioData = pcmToAudioData(p.data, pcm, p.timestampUs)
+      if (!audioData) { failed = true; break }
+      encoder.encode(audioData)
+      audioData.close()
+    }
+    await encoder.flush()
+    if (failed || encoded.length === 0 || !asc) throw new LivePhotoMakerError('audioUnsupported')
+    return {
+      handler: 'soun',
+      trackId: 2,
+      timescale: pcm.sampleRate,
+      samples: toMovSamples(encoded, pcm.sampleRate),
+      sampleEntry: mp4aEntry(pcm.sampleRate, pcm.channels, asc),
+      width: 0,
+      height: 0,
+    }
+  } catch {
+    throw new LivePhotoMakerError('audioUnsupported')
+  } finally {
+    if (encoder.state !== 'closed') encoder.close()
   }
 }
 

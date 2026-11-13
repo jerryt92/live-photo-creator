@@ -36,8 +36,11 @@ function startPlayback(): void {
   if (!video || !live.value) return
   holding.value = true
   ended.value = false
-  progress.value = 0
-  video.currentTime = 0
+  // 循环播放贴合封面锚点：从所选封面时刻起播；未指定封面位置则从开头。
+  const anchor = Math.max(props.stillTime ?? 0, 0)
+  const start = props.duration ? Math.min(anchor, props.duration) : anchor
+  progress.value = props.duration ? start / props.duration : 0
+  video.currentTime = start
   void video.play().catch(() => {
     holding.value = false
   })
