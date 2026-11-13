@@ -1,13 +1,13 @@
-<script setup lang="ts">
-/** 双选项分段控件（滑动拇指）。 */
+<script setup lang="ts" generic="T extends string">
+/** 分段控件（滑动拇指），泛型以匹配字面量联合值（如 SizeTier）。 */
 defineProps<{
-  modelValue: string
-  options: { value: string; label: string }[]
+  modelValue: T
+  options: { value: T; label: string }[]
   disabled?: boolean
   ariaLabel?: string
 }>()
 
-const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
+const emit = defineEmits<{ 'update:modelValue': [value: T] }>()
 </script>
 
 <template>

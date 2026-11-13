@@ -86,6 +86,42 @@ export interface LivePhotoBuild {
 /** 素材限制：视频最长 3 分钟。 */
 export const MAX_VIDEO_DURATION = 180
 
+/** 导出尺寸档位：原画保 HDR 不压缩；合适/较小自动压缩为 SDR H.264 以便发布到媒体平台。 */
+export type SizeTier = 'original' | 'large' | 'suitable' | 'smaller'
+
+export interface SizeTierSpec {
+  /** 显示长边上限（像素）；原画为 Infinity 不缩放。 */
+  maxLongEdge: number
+  /** 是否重编码为 SDR H.264（压缩档）。 */
+  compress: boolean
+  /** 压缩码率策略：面积×帧率×系数，钳制到 [bitrateMin, bitrateMax]。 */
+  bitrateFactor: number
+  bitrateMin: number
+  bitrateMax: number
+}
+
+export const SIZE_TIERS: Record<SizeTier, SizeTierSpec> = {
+  original: { maxLongEdge: Number.POSITIVE_INFINITY, compress: false, bitrateFactor: 0.08, bitrateMin: 1_200_000, bitrateMax: 8_000_000 },
+  large: { maxLongEdge: 1920, compress: true, bitrateFactor: 0.08, bitrateMin: 1_500_000, bitrateMax: 8_000_000 },
+  suitable: { maxLongEdge: 1280, compress: true, bitrateFactor: 0.06, bitrateMin: 1_200_000, bitrateMax: 4_000_000 },
+  smaller: { maxLongEdge: 854, compress: true, bitrateFactor: 0.05, bitrateMin: 800_000, bitrateMax: 2_500_000 },
+}
+
+/** 默认档位：合适（均衡画质与体积，便于发布）。 */
+export const DEFAULT_SIZE_TIER: SizeTier = 'suitable'
+
+/** 按长边上限与源显示尺寸计算缩放比（不放大），并返回偶数化的目标尺寸。 */
+export function scaledDimensions(
+  width: number,
+  height: number,
+  maxLongEdge: number,
+): { width: number; height: number; scale: number } {
+  const longEdge = Math.max(width, height)
+  const scale = longEdge > 0 ? Math.min(1, maxLongEdge / longEdge) : 1
+  const even = (v: number) => Math.max(2, Math.round(v / 2) * 2)
+  return { width: even(width * scale), height: even(height * scale), scale }
+}
+
 export type MakerErrorCode =
   | 'photoUnreadable'
   | 'videoUnreadable'

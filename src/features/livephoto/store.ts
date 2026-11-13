@@ -3,6 +3,7 @@
  */
 import { computed, reactive } from 'vue'
 import {
+  DEFAULT_SIZE_TIER,
   LivePhotoMakerError,
   type LivePhotoBuild,
   type MakerErrorCode,
@@ -10,6 +11,7 @@ import {
   type MediaKind,
   type MetadataSource,
   type Phase,
+  type SizeTier,
 } from './models'
 import { importPhoto, importVideo, captureVideoThumbnail, captureVideoCover, captureFirstVideoCover, type DecodedPhoto, type VideoAnalysis } from './services/media'
 import { buildLivePhoto } from './services/builder'
@@ -25,9 +27,13 @@ export interface MakerState {
   phase: Phase
   progress: number
   errorCode: MakerErrorCode | null
+  /** 原始异常细节（诊断用）：LivePhotoMakerError 之外的真实报错文本。 */
+  errorDetail: string | null
   result: LivePhotoBuild | null
   /** 封面在视频中的锚点时刻（秒）；自定义照片为 undefined。预览播放与 still-image-time 共用。 */
   coverTime: number | undefined
+  /** 导出尺寸档位：原画 / 较大 / 合适 / 较小。 */
+  sizeTier: SizeTier
 }
 
 const state = reactive<MakerState>({
@@ -38,14 +44,25 @@ const state = reactive<MakerState>({
   phase: 'idle',
   progress: 0,
   errorCode: null,
+  errorDetail: null,
   result: null,
   coverTime: undefined,
+  sizeTier: DEFAULT_SIZE_TIER,
 })
 
 let decodedPhoto: DecodedPhoto | null = null
 let videoAnalysis: VideoAnalysis | null = null
 /** 自动封面在途记录：同一视频去重；换视频后旧结果自动作废（见 setVideoCover）。 */
 let autoCoverFile: File | null = null
+
+/** 原始异常简短描述：错误名 + 消息（截断），供错误弹框诊断展示。 */
+function describeError(e: unknown): string | null {
+  if (e instanceof LivePhotoMakerError) return null
+  const name = e instanceof Error ? e.name : ''
+  const msg = e instanceof Error ? e.message : String(e)
+  const text = [name, msg].filter(Boolean).join(': ')
+  return text.length > 300 ? text.slice(0, 300) + '…' : text || null
+}
 
 export function useMaker() {
   const isWorking = computed(() => state.phase !== 'idle' || state.importingKind !== null)
@@ -76,6 +93,7 @@ export function useMaker() {
       state.coverTime = undefined
     } catch (e) {
       state.errorCode = e instanceof LivePhotoMakerError ? e.code : 'photoUnreadable'
+      state.errorDetail = describeError(e)
     } finally {
       state.importingKind = null
     }
@@ -89,7 +107,10 @@ export function useMaker() {
     const analysis = videoAnalysis
     const time = video?.currentTime ?? 0
     try {
-      // 可重封装的 hvc1 HDR 源：优先比特级抽取目标时刻的 IDR 关键帧（零转码保 HDR）。
+      // 可重封装的 hvc1 HDR 源：比特级抽取目标时刻的 IDR 关键帧（零转码保 HDR）。
+      // 无条件抽取：抽取本身很便宜，且档位可在封面生成之后才切换——
+      // 若在压缩档跳过抽取，切回「原画」时 HDR 静帧已缺失，成片会没 HDR。
+      // 是否使用由 builder 按合成时的档位决定（压缩档舍弃、回落 SDR）。
       const videoTrack = analysis?.movie?.tracks.find((t) => t.handler === 'vide')
       let prebuilt: HevcStill | undefined
       if (analysis?.remuxable && analysis.movie && videoTrack) {
@@ -112,8 +133,8 @@ export function useMaker() {
       // 保证封面帧与 still-image-time / 播放锚点严格一致；否则用所选时刻。
       state.coverTime = prebuilt?.timeSeconds ?? time
       state.photo = item
-    } catch {
-      if (!automatic) state.errorCode = 'photoUnreadable'
+    } catch (e) {
+      if (!automatic) { state.errorCode = 'photoUnreadable'; state.errorDetail = describeError(e) }
     }
   }
 
@@ -159,6 +180,7 @@ export function useMaker() {
       })
     } catch (e) {
       state.errorCode = e instanceof LivePhotoMakerError ? e.code : 'videoUnreadable'
+      state.errorDetail = describeError(e)
     } finally {
       state.importingKind = null
     }
@@ -192,6 +214,7 @@ export function useMaker() {
         analysis: videoAnalysis,
         metadataSource: state.metadataSource,
         coverTime: state.coverTime,
+        sizeTier: state.sizeTier,
         onProgress: ({ phase, progress }) => {
           state.phase = phase
           state.progress = progress
@@ -204,6 +227,7 @@ export function useMaker() {
       state.phase = 'idle'
       state.progress = 0
       state.errorCode = e instanceof LivePhotoMakerError ? e.code : 'compositionFailed'
+      state.errorDetail = describeError(e)
     }
   }
 
@@ -216,6 +240,7 @@ export function useMaker() {
 
   function dismissError(): void {
     state.errorCode = null
+    state.errorDetail = null
   }
 
   return {

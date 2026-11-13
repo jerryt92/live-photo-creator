@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 元数据面板：来源分段选择 + 拍摄时间/位置读数。 */
+/** 配置面板：导出尺寸三档 + 元数据来源分段选择 + 拍摄时间/位置读数。 */
 import { computed } from 'vue'
 import { useI18n } from '../i18n'
 import { useMaker } from '../features/livephoto/store'
@@ -13,6 +13,22 @@ const sourceOptions = computed(() => [
   { value: 'photo', label: t('livePhoto.photo.title') },
   { value: 'video', label: t('livePhoto.video.title') },
 ])
+
+const sizeOptions = computed(() => [
+  { value: 'original', label: t('livePhoto.size.original') },
+  { value: 'large', label: t('livePhoto.size.large') },
+  { value: 'suitable', label: t('livePhoto.size.suitable') },
+  { value: 'smaller', label: t('livePhoto.size.smaller') },
+])
+
+const sizeHint = computed(() => {
+  switch (state.sizeTier) {
+    case 'original': return t('livePhoto.size.originalHint')
+    case 'large': return t('livePhoto.size.largeHint')
+    case 'smaller': return t('livePhoto.size.smallerHint')
+    default: return t('livePhoto.size.suitableHint')
+  }
+})
 
 const dateText = computed(() => {
   const date = selectedMetadata.value.creationDate
@@ -32,7 +48,18 @@ const locationText = computed(() => {
     </header>
 
     <div class="card-body">
-      <div class="field">
+      <div class="field" data-field="size">
+        <span class="field-label">{{ t('livePhoto.size.label') }}</span>
+        <SegmentedControl
+          v-model="state.sizeTier"
+          :options="sizeOptions"
+          :disabled="isWorking"
+          :aria-label="t('livePhoto.size.label')"
+        />
+        <p class="field-hint">{{ sizeHint }}</p>
+      </div>
+
+      <div class="field" data-field="source">
         <span class="field-label">{{ t('livePhoto.metadata.source') }}</span>
         <SegmentedControl
           v-model="state.metadataSource"
@@ -102,6 +129,13 @@ const locationText = computed(() => {
   font-size: 13.5px;
   font-weight: 600;
   color: var(--ink-2);
+}
+
+.field-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-3);
 }
 
 .readings {

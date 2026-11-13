@@ -96,6 +96,25 @@ function loadImageElement(file: File): Promise<HTMLImageElement> {
   })
 }
 
+/** 把封面图缩放到目标尺寸并重编码为 JPEG（压缩档用，画布天然输出 SDR）。 */
+export async function scalePhotoBlob(blob: Blob, width: number, height: number): Promise<Blob> {
+  const bitmap = await createImageBitmap(blob)
+  try {
+    if (bitmap.width === width && bitmap.height === height) return blob
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new LivePhotoMakerError('photoUnreadable')
+    ctx.drawImage(bitmap, 0, 0, width, height)
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new LivePhotoMakerError('photoUnreadable'))), 'image/jpeg', 0.92)
+    })
+  } finally {
+    bitmap.close()
+  }
+}
+
 /** 生成携带配对标识与所选元数据的关键照片 JPEG。 */
 export async function buildKeyPhoto(
   decoded: DecodedPhoto,

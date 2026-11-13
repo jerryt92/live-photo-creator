@@ -16,6 +16,8 @@ const { t } = useI18n()
 const { state, isWorking, selectPhoto, selectVideo, selectCoverFrame, removePhoto, removeVideo, dismissError } = useMaker()
 // 版权年份随系统时间自动更新，无需每年手动维护。
 const copyrightYear = new Date().getFullYear()
+// 构建/启动时刻（vite define 注入），确认页面对应的代码版本。
+const buildStamp = __BUILD_STAMP__
 const coverDialog = ref<HTMLDialogElement>()
 const coverInput = ref<HTMLInputElement>()
 const coverVideo = ref<HTMLVideoElement>()
@@ -64,9 +66,9 @@ const isSafari = navigator.vendor === 'Apple Computer, Inc.' &&
 const unsupportedDevice = !isMac && !isIOS
 // 非 Apple 设备 → 不支持提示；Apple 设备但非 Safari → 全屏 Safari 引导（Mac 同样适用）。
 const browserRequired = unsupportedDevice || !isSafari
-const step = ref<'materials' | 'metadata' | 'export'>('materials')
+const step = ref<'materials' | 'settings' | 'export'>('materials')
 const navigation = ref<HTMLElement>()
-const steps = ['materials', 'metadata', 'export'] as const
+const steps = ['materials', 'settings', 'export'] as const
 const hasMaterials = computed(() => !!state.photo && !!state.video)
 
 // 选完素材不自动跳页：由「下一步」按钮推进；合成完成进入导出；重置/素材缺失时回到素材页。
@@ -87,13 +89,14 @@ watch(step, () => {
 function stepDisabled(target: typeof step.value): boolean {
   if (target === step.value) return false
   return isWorking.value ||
-    (target === 'metadata' && !hasMaterials.value) ||
+    (target === 'settings' && !hasMaterials.value) ||
     (target === 'export' && !state.result)
 }
 
 const errorMessage = computed(() => {
   if (!state.errorCode) return ''
-  return t(`livePhoto.error.${state.errorCode}` as const)
+  const base = t(`livePhoto.error.${state.errorCode}` as const)
+  return state.errorDetail ? `${base}\n${state.errorDetail}` : base
 })
 
 const previewDuration = computed(() => state.video?.duration)
@@ -164,7 +167,7 @@ onBeforeUnmount(() => {
             class="next"
             type="button"
             :disabled="!hasMaterials || isWorking"
-            @click="step = 'metadata'"
+            @click="step = 'settings'"
           >
             <span>{{ t('workflow.next') }}</span>
             <Icon name="chevron" :size="16" />
@@ -201,7 +204,7 @@ onBeforeUnmount(() => {
       <p class="section-foot">{{ t('livePhoto.materials.footer') }}</p>
     </section>
 
-    <section v-show="step === 'metadata'" id="step-metadata" class="metadata-step">
+    <section v-show="step === 'settings'" id="step-settings" class="metadata-step">
       <MetadataPanel />
     </section>
 
@@ -211,6 +214,8 @@ onBeforeUnmount(() => {
 
     <footer class="footer">
       <p class="copyright">© {{ copyrightYear }} jerryt92</p>
+      <!-- 构建标记：页面右下角短码用于确认运行的是最新代码（旧标签页/缓存一眼可辨）。 -->
+      <p class="build-stamp mono">build {{ buildStamp }}</p>
     </footer>
   </main>
 
@@ -439,6 +444,12 @@ onBeforeUnmount(() => {
   font-family: var(--font-display);
   font-weight: 600;
   letter-spacing: 0.04em;
+}
+
+.build-stamp {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  opacity: 0.65;
 }
 
 </style>

@@ -103,6 +103,8 @@ onBeforeUnmount(() => {
   line-height: 1.55;
   color: var(--ink-2);
   margin-bottom: 16px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .dialog-ok {
