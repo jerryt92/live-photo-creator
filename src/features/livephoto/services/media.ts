@@ -280,7 +280,8 @@ export async function captureFirstVideoCover(file: File, metadata: CaptureMetada
   video.preload = 'auto'
   try {
     await new Promise<void>((resolve, reject) => {
-      const timeout = window.setTimeout(() => reject(new Error('Video frame timed out')), 10000)
+      // 4K HEVC 在移动端首帧「解码+draw+JPEG 编码」可达 15-25 秒，10 秒过紧会误判超时。
+      const timeout = window.setTimeout(() => reject(new Error('Video frame timed out')), 30000)
       video.onloadeddata = () => { window.clearTimeout(timeout); resolve() }
       video.onerror = () => { window.clearTimeout(timeout); reject(new Error('Video frame unavailable')) }
       video.src = url
