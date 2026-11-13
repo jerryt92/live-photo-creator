@@ -1,5 +1,5 @@
 <script setup lang="ts" generic="T extends string">
-/** 分段控件（滑动拇指），泛型以匹配字面量联合值（如 SizeTier）。 */
+/** 分段控件（滑动拇指），泛型以匹配字面量联合值（如 MetadataSource）。 */
 defineProps<{
   modelValue: T
   options: { value: T; label: string }[]

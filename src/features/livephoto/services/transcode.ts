@@ -11,9 +11,9 @@
  */
 import { ByteWriter, concatBytes } from './bytes'
 import { expandSamples, findBox, parseBoxes, type MovieInfo, type TrackInfo } from './mp4'
-import { copyMovieTrack, irotAngleFromMatrix, type MovSample, type MovTrackInput } from './mov'
+import { copyMovieTrack, type MovSample, type MovTrackInput } from './mov'
 import type { VideoAnalysis } from './media'
-import { LivePhotoMakerError, scaledDimensions, type HevcColorInfo } from '../models'
+import { LivePhotoMakerError, type HevcColorInfo } from '../models'
 import {
   buildHvc1Entry, findDolbyVisionConfig, hdrColorFromDolbyVision, isConvertibleDolbyVision,
   nclxBox, sampleHasRpu, stripRpu,
@@ -343,11 +343,24 @@ function mp4VideoDecoderConfig(movie: MovieInfo): VideoDecoderConfig | undefined
   // dvh1/dvhe 样本喂解码器前已剥离 RPU，按普通 HEVC 基底解码。
   if (entry.format === 'hvc1' || entry.format === 'hev1' || entry.format === 'dvh1' || entry.format === 'dvhe') {
     const hvcC = findCodecConfig(entry.raw, 'hvcC')
-    if (hvcC && hvcC.byteLength > 13) {
+    if (hvcC && hvcC.byteLength >= 31) {
       const record = hvcC.subarray(8)
       const profile = record[1] & 0x1f
+      const space = ['', 'A', 'B', 'C'][record[1] >>> 6]
+      const tier = record[1] & 0x20 ? 'H' : 'L'
       const level = record[12]
-      return { codec: `hvc1.${profile}.4.L${level}.B0`, description: record }
+      const view = new DataView(record.buffer, record.byteOffset, record.byteLength)
+      let flags = view.getUint32(2)
+      let compatibility = 0
+      for (let bit = 0; bit < 32; bit++) {
+        compatibility = (compatibility << 1) | (flags & 1)
+        flags >>>= 1
+      }
+      const constraints = Array.from(record.subarray(6, 12))
+      while (constraints.length && constraints.at(-1) === 0) constraints.pop()
+      const suffix = constraints.map((byte) => `.${byte.toString(16).padStart(2, '0')}`).join('')
+      const format = entry.format === 'hev1' || entry.format === 'dvhe' ? 'hev1' : 'hvc1'
+      return { codec: `${format}.${space}${profile}.${(compatibility >>> 0).toString(16)}.${tier}${level}${suffix}`, description: record }
     }
   }
   return undefined
@@ -458,24 +471,13 @@ function toMovSamples(encoded: EncodedSample[], timescale = TIMESCALE): MovSampl
   })
 }
 
-export interface TranscodeOptions {
-  /** 显示长边上限（像素）：存在即进入压缩档——缩放 + SDR H.264。 */
-  maxLongEdge?: number
-  /** 压缩码率策略（按目标像素面积自动取值）。 */
-  bitrateFactor?: number
-  bitrateMin?: number
-  bitrateMax?: number
-}
-
 export async function transcodeToTracks(
   analysis: VideoAnalysis,
   onProgress?: (fraction: number) => void,
-  options?: TranscodeOptions,
 ): Promise<TranscodeResult> {
-  const compress = options?.maxLongEdge !== undefined && Number.isFinite(options.maxLongEdge)
   // 首选混合重封装：视频比特级搬运（HDR 原样保留），仅音频按需转码。
-  // 这条路径不做任何视频转码，是 HDR 源保真的关键。压缩档必须绕开它。
-  if (!compress && analysis.movie && analysis.videoCopyable) {
+  // 这条路径不做任何视频转码，是 HDR 源保真的关键。
+  if (analysis.movie && analysis.videoCopyable) {
     return remuxCopyableVideo(analysis, onProgress)
   }
 
@@ -488,7 +490,6 @@ export async function transcodeToTracks(
   let hasAudio = false
   let copiedAudio: MovTrackInput | undefined
   let audioTrackToTranscode: TrackInfo | undefined
-  let videoMatrix: Uint8Array | undefined
   let videoHasDv = false
   let movieTimescale = TIMESCALE
   let audioConfig: AudioDecoderConfig | undefined
@@ -536,7 +537,6 @@ export async function transcodeToTracks(
     const movie = analysis.movie
     const vTrack = movie.tracks.find((t) => t.handler === 'vide')
     if (!vTrack) throw new LivePhotoMakerError('videoTrackMissing')
-    videoMatrix = vTrack.matrix
     videoConfig = mp4VideoDecoderConfig(movie)
     // Dolby Vision 源喂给普通 HEVC 解码器前需剥离 RPU（type 62 未知 NAL 会导致解码报错）；
     // 在解码循环里按样本处理，避免此处整读源文件。
@@ -577,19 +577,9 @@ export async function transcodeToTracks(
   // Safari 的 VideoToolbox 严格拒绝——level/帧率超预算时编码器运行时报错，
   // 连锁触发 "VideoDecoder is not configured" 的误导性失败。
   const srcFramerate = estimateFramerate(videoPackets)
-  const compressAngle = compress ? irotAngleFromMatrix(videoMatrix) : 0
-  const compressTarget = compress
-    ? scaledDimensions(
-        (compressAngle % 2 === 1 ? height : width) || 640,
-        (compressAngle % 2 === 1 ? width : height) || 360,
-        options!.maxLongEdge!,
-      )
-    : undefined
-  const probeWidth = compressTarget?.width ?? width ?? 640
-  const probeHeight = compressTarget?.height ?? height ?? 360
-  const probeBitrate = compress
-    ? Math.min(options!.bitrateMax ?? 8_000_000, Math.max(options!.bitrateMin ?? 1_500_000, Math.round(probeWidth * probeHeight * srcFramerate * (options!.bitrateFactor ?? 0.08))))
-    : Math.min(8_000_000, Math.max(1_200_000, Math.round(probeWidth * probeHeight * srcFramerate * 0.08)))
+  const probeWidth = width || 640
+  const probeHeight = height || 360
+  const probeBitrate = Math.min(8_000_000, Math.max(1_200_000, Math.round(probeWidth * probeHeight * srcFramerate * 0.08)))
   let encoderCodec: string | undefined
   for (const candidate of avcHighCandidates(probeWidth, probeHeight, srcFramerate)) {
     let support
@@ -600,6 +590,8 @@ export async function transcodeToTracks(
         height: probeHeight,
         bitrate: probeBitrate,
         framerate: srcFramerate,
+        avc: { format: 'avc' },
+        latencyMode: 'quality',
       })
     } catch {
       continue
@@ -639,133 +631,6 @@ export async function transcodeToTracks(
   }
 
   async function transcodeVideo(): Promise<MovTrackInput> {
-    // 压缩档：画布缩放 + 旋转摆正 + sRGB 色调映射（HDR→SDR），输出 H.264。
-    if (compress && compressTarget) {
-      const angle = compressAngle
-      const target = compressTarget
-      const factor = options!.bitrateFactor ?? 0.08
-      const minBitrate = options!.bitrateMin ?? 1_500_000
-      const maxBitrate = options!.bitrateMax ?? 8_000_000
-      const bitrate = Math.min(maxBitrate, Math.max(minBitrate, Math.round(target.width * target.height * 30 * factor)))
-
-      const encodedVideo: EncodedSample[] = []
-      let avcC: Uint8Array | undefined
-      let done = 0
-      const canvas = document.createElement('canvas')
-      canvas.width = target.width
-      canvas.height = target.height
-      const ctx = canvas.getContext('2d', { alpha: false })
-      if (!ctx) throw new LivePhotoMakerError('videoUnsupported')
-
-      const videoEncoder = new VideoEncoder({
-        output: (chunk, metadata) => {
-          const data = new Uint8Array(chunk.byteLength)
-          chunk.copyTo(data)
-          encodedVideo.push({
-            data,
-            timestampUs: chunk.timestamp,
-            durationUs: chunk.duration ?? 33333,
-            isKey: chunk.type === 'key',
-          })
-          const desc = metadata?.decoderConfig?.description
-          if (desc && !avcC) {
-            avcC = desc instanceof Uint8Array ? desc : new Uint8Array(desc as ArrayBuffer)
-          }
-        },
-        error: () => {},
-      })
-      videoEncoder.configure({
-        codec,
-        width: target.width,
-        height: target.height,
-        bitrate,
-        framerate: srcFramerate,
-        avc: { format: 'avc' },
-        latencyMode: 'quality',
-      })
-
-      let decodeError: Error | undefined
-      const videoDecoder = new VideoDecoder({
-        output: (frame) => {
-          try {
-            try {
-              // 显示 = 对编码帧逆时针旋转 angle×90°；canvas.rotate 正值视觉顺时针，故取负。
-              const cw = frame.codedWidth
-              const ch = frame.codedHeight
-              const scale = angle % 2 === 1 ? target.width / ch : target.width / cw
-              ctx.fillStyle = '#000'
-              ctx.fillRect(0, 0, canvas.width, canvas.height)
-              ctx.save()
-              ctx.translate(canvas.width / 2, canvas.height / 2)
-              ctx.rotate((-angle * Math.PI) / 2)
-              ctx.drawImage(frame, (-cw * scale) / 2, (-ch * scale) / 2, cw * scale, ch * scale)
-              ctx.restore()
-              const scaled = new VideoFrame(canvas, { timestamp: frame.timestamp, duration: frame.duration || undefined })
-              try {
-                videoEncoder.encode(scaled, { keyFrame: done % 60 === 0 })
-              } finally {
-                scaled.close()
-              }
-            } catch (e) {
-              // 编码/绘制异常必须就地捕获：从输出回调逃出会让 WebKit 把解码器
-              // 打进错误态，之后的 decode() 报误导性的 "VideoDecoder is not configured"。
-              if (!decodeError) decodeError = e instanceof Error ? e : new Error(String(e))
-            }
-          } finally {
-            frame.close()
-            done++
-            onProgress?.(Math.min(0.9, (done / Math.max(1, videoPackets.length)) * 0.9))
-          }
-        },
-        error: (e) => {
-          decodeError = e instanceof Error ? e : new Error(String(e))
-        },
-      })
-      videoDecoder.configure(decoderConfig)
-      for (const p of videoPackets) {
-        if (decodeError) break
-        try {
-          videoDecoder.decode(
-            new EncodedVideoChunk({
-              type: p.isKey ? 'key' : 'delta',
-              timestamp: p.timestampUs,
-              duration: p.durationUs,
-              data: await resolvePacket(p, sampleReader, videoHasDv),
-            }),
-          )
-        } catch (e) {
-          if (!decodeError) decodeError = e instanceof Error ? e : new Error(String(e))
-        }
-        // 背压只限解码输入队列：输出回调里已逐帧 close，已编码 chunk 落进
-        // encodedVideo（体积受输出尺寸约束，安全）。切勿对 encodeQueueSize 阻塞——
-        // 输出回调仍会为每个已解码帧调用 encode()，编码慢于解码时会自锁死。
-        if (videoDecoder.decodeQueueSize > 24) {
-          await new Promise<void>((resolve) => {
-            const check = () => (videoDecoder.decodeQueueSize <= 8 ? resolve() : setTimeout(check, 8))
-            check()
-          })
-        }
-      }
-      await videoDecoder.flush().catch(() => {})
-      videoDecoder.close()
-      await videoEncoder.flush()
-      videoEncoder.close()
-      canvas.width = canvas.height = 0
-      if (decodeError || encodedVideo.length === 0 || !avcC) {
-        // 带上原始异常：弹框可展示真实原因（level 超预算、编码器格式等）。
-        throw decodeError ?? new LivePhotoMakerError('videoUnsupported')
-      }
-      return {
-        handler: 'vide',
-        trackId: 1,
-        timescale: TIMESCALE,
-        samples: toMovSamples(encodedVideo),
-        sampleEntry: avc1Entry(target.width, target.height, avcC),
-        width: target.width,
-        height: target.height,
-      }
-    }
-
     const w = width || 640
     const h = height || 360
 

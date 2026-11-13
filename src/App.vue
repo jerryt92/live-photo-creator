@@ -66,9 +66,9 @@ const isSafari = navigator.vendor === 'Apple Computer, Inc.' &&
 const unsupportedDevice = !isMac && !isIOS
 // 非 Apple 设备 → 不支持提示；Apple 设备但非 Safari → 全屏 Safari 引导（Mac 同样适用）。
 const browserRequired = unsupportedDevice || !isSafari
-const step = ref<'materials' | 'settings' | 'export'>('materials')
+const step = ref<'materials' | 'metadata' | 'export'>('materials')
 const navigation = ref<HTMLElement>()
-const steps = ['materials', 'settings', 'export'] as const
+const steps = ['materials', 'metadata', 'export'] as const
 const hasMaterials = computed(() => !!state.photo && !!state.video)
 
 // 选完素材不自动跳页：由「下一步」按钮推进；合成完成进入导出；重置/素材缺失时回到素材页。
@@ -89,7 +89,7 @@ watch(step, () => {
 function stepDisabled(target: typeof step.value): boolean {
   if (target === step.value) return false
   return isWorking.value ||
-    (target === 'settings' && !hasMaterials.value) ||
+    (target === 'metadata' && !hasMaterials.value) ||
     (target === 'export' && !state.result)
 }
 
@@ -167,7 +167,7 @@ onBeforeUnmount(() => {
             class="next"
             type="button"
             :disabled="!hasMaterials || isWorking"
-            @click="step = 'settings'"
+            @click="step = 'metadata'"
           >
             <span>{{ t('workflow.next') }}</span>
             <Icon name="chevron" :size="16" />
@@ -204,7 +204,7 @@ onBeforeUnmount(() => {
       <p class="section-foot">{{ t('livePhoto.materials.footer') }}</p>
     </section>
 
-    <section v-show="step === 'settings'" id="step-settings" class="metadata-step">
+    <section v-show="step === 'metadata'" id="step-metadata" class="metadata-step">
       <MetadataPanel />
     </section>
 

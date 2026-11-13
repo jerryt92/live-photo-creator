@@ -4,15 +4,12 @@
  * content identifier 与 still-image-time 轨道的 MOV；最后校验成对文件。
  */
 import { makeUUID } from './bytes'
-import { buildKeyPhoto, scalePhotoBlob, verifyKeyPhoto, type DecodedPhoto } from './jpeg'
+import { buildKeyPhoto, verifyKeyPhoto, type DecodedPhoto } from './jpeg'
 import { applyMetadata, localOffsetMinutes, toExifDateString } from './capture'
 import { buildMovieBlob, copyMovieTrack, verifyMov, type MovTrackInput } from './mov'
 import { transcodeToTracks } from './transcode'
 import type { VideoAnalysis } from './media'
-import {
-  DEFAULT_SIZE_TIER, LivePhotoMakerError, SIZE_TIERS, scaledDimensions,
-  type LivePhotoBuild, type MediaItem, type MetadataSource, type SizeTier,
-} from '../models'
+import { LivePhotoMakerError, type LivePhotoBuild, type MediaItem, type MetadataSource } from '../models'
 
 export interface BuildProgress {
   phase: 'composing' | 'saving'
@@ -26,15 +23,11 @@ export interface BuildOptions {
   analysis: VideoAnalysis
   metadataSource: MetadataSource
   coverTime?: number
-  sizeTier?: SizeTier
   onProgress?: (p: BuildProgress) => void
 }
 
 export async function buildLivePhoto(opts: BuildOptions): Promise<LivePhotoBuild> {
-  const { photo, video, analysis, metadataSource, onProgress } = opts
-  const sizeTier = opts.sizeTier ?? DEFAULT_SIZE_TIER
-  const tier = SIZE_TIERS[sizeTier]
-  const compress = tier.compress
+  const { photo, video, analysis, metadataSource, decodedPhoto, onProgress } = opts
   const createdAt = new Date(Math.floor(Date.now() / 1000) * 1000)
   const identifier = makeUUID()
   onProgress?.({ phase: 'composing', progress: 0.05 })
@@ -42,16 +35,6 @@ export async function buildLivePhoto(opts: BuildOptions): Promise<LivePhotoBuild
   const capture = {
     ...(metadataSource === 'photo' ? photo.metadata : applyMetadata(video.metadata)),
     creationDate: { epochMs: createdAt.getTime(), offsetMinutes: localOffsetMinutes(createdAt) },
-  }
-
-  // 压缩档：仅「视频截帧封面」同步缩放到长边上限并转 SDR。
-  // 单独上传的封面照片（无 coverTime）不参与尺寸压缩与 SDR 转换，原样保留。
-  const customCoverPhoto = opts.coverTime === undefined
-  let decodedPhoto = opts.decodedPhoto
-  if (compress && !customCoverPhoto) {
-    const target = scaledDimensions(decodedPhoto.width, decodedPhoto.height, tier.maxLongEdge)
-    const scaledBlob = await scalePhotoBlob(decodedPhoto.blob, target.width, target.height)
-    decodedPhoto = { ...decodedPhoto, blob: scaledBlob, width: target.width, height: target.height, hevcStill: undefined }
   }
 
   const { bytes: photoBytes, exifTiff } = await buildKeyPhoto(decodedPhoto, capture, identifier)
@@ -62,20 +45,7 @@ export async function buildLivePhoto(opts: BuildOptions): Promise<LivePhotoBuild
   let movieTimescale: number
   let duration: number
 
-  if (compress) {
-    // 压缩档强制重编码为 SDR H.264 并缩放到长边上限，便于发布到媒体平台。
-    const result = await transcodeToTracks(analysis, (f) => {
-      onProgress?.({ phase: 'composing', progress: 0.2 + f * 0.6 })
-    }, {
-      maxLongEdge: tier.maxLongEdge,
-      bitrateFactor: tier.bitrateFactor,
-      bitrateMin: tier.bitrateMin,
-      bitrateMax: tier.bitrateMax,
-    })
-    tracks = result.tracks
-    movieTimescale = result.movieTimescale
-    duration = result.duration
-  } else if (analysis.remuxable && analysis.movie) {
+  if (analysis.remuxable && analysis.movie) {
     const movie = analysis.movie
     movieTimescale = movie.timescale
     duration = movie.duration / movie.timescale
@@ -135,7 +105,7 @@ export async function buildLivePhoto(opts: BuildOptions): Promise<LivePhotoBuild
     stillTimeSeconds,
     photoUrl: URL.createObjectURL(photoBlob),
     videoUrl: URL.createObjectURL(videoBlob),
-    // 压缩档截帧封面已在上方置空 hevcStill；自定义上传封面本就无 hevcStill。
+    // HDR 视频截帧封面携带原生 HEVC 静帧，PVT 直接封装保 HDR；自定义上传封面本就无 hevcStill。
     hevcStill: decodedPhoto.hevcStill,
   }
   onProgress?.({ phase: 'saving', progress: 1 })

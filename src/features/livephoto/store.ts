@@ -3,7 +3,6 @@
  */
 import { computed, reactive } from 'vue'
 import {
-  DEFAULT_SIZE_TIER,
   LivePhotoMakerError,
   type LivePhotoBuild,
   type MakerErrorCode,
@@ -11,7 +10,6 @@ import {
   type MediaKind,
   type MetadataSource,
   type Phase,
-  type SizeTier,
 } from './models'
 import { importPhoto, importVideo, captureVideoThumbnail, captureVideoCover, captureFirstVideoCover, type DecodedPhoto, type VideoAnalysis } from './services/media'
 import { buildLivePhoto } from './services/builder'
@@ -32,8 +30,6 @@ export interface MakerState {
   result: LivePhotoBuild | null
   /** 封面在视频中的锚点时刻（秒）；自定义照片为 undefined。预览播放与 still-image-time 共用。 */
   coverTime: number | undefined
-  /** 导出尺寸档位：原画 / 较大 / 合适 / 较小。 */
-  sizeTier: SizeTier
 }
 
 const state = reactive<MakerState>({
@@ -47,7 +43,6 @@ const state = reactive<MakerState>({
   errorDetail: null,
   result: null,
   coverTime: undefined,
-  sizeTier: DEFAULT_SIZE_TIER,
 })
 
 let decodedPhoto: DecodedPhoto | null = null
@@ -108,9 +103,7 @@ export function useMaker() {
     const time = video?.currentTime ?? 0
     try {
       // 可重封装的 hvc1 HDR 源：比特级抽取目标时刻的 IDR 关键帧（零转码保 HDR）。
-      // 无条件抽取：抽取本身很便宜，且档位可在封面生成之后才切换——
-      // 若在压缩档跳过抽取，切回「原画」时 HDR 静帧已缺失，成片会没 HDR。
-      // 是否使用由 builder 按合成时的档位决定（压缩档舍弃、回落 SDR）。
+      // 抽取很便宜（单样本切片），无条件执行以保证 HDR 封面始终可用。
       const videoTrack = analysis?.movie?.tracks.find((t) => t.handler === 'vide')
       let prebuilt: HevcStill | undefined
       if (analysis?.remuxable && analysis.movie && videoTrack) {
@@ -214,7 +207,6 @@ export function useMaker() {
         analysis: videoAnalysis,
         metadataSource: state.metadataSource,
         coverTime: state.coverTime,
-        sizeTier: state.sizeTier,
         onProgress: ({ phase, progress }) => {
           state.phase = phase
           state.progress = progress
