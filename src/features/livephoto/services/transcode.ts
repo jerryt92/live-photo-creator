@@ -572,7 +572,11 @@ export async function transcodeToTracks(
   if (!videoConfig) throw new LivePhotoMakerError('videoUnsupported')
   const decoderConfig = videoConfig
 
-  // 2. 选择编码器配置（压缩档按缩放后的目标尺寸探测能力）
+  // 2. 选择编码器配置：按目标尺寸 + **实际源帧率** 计算满足 H.264 level 宏块
+  // 预算的候选（1080p60 必须 ≥L4.2）。只按宽高探测会让 Chrome 蒙混过关而
+  // Safari 的 VideoToolbox 严格拒绝——level/帧率超预算时编码器运行时报错，
+  // 连锁触发 "VideoDecoder is not configured" 的误导性失败。
+  const srcFramerate = estimateFramerate(videoPackets)
   const compressAngle = compress ? irotAngleFromMatrix(videoMatrix) : 0
   const compressTarget = compress
     ? scaledDimensions(
@@ -583,12 +587,25 @@ export async function transcodeToTracks(
     : undefined
   const probeWidth = compressTarget?.width ?? width ?? 640
   const probeHeight = compressTarget?.height ?? height ?? 360
-  const candidates = ['avc1.640028', 'avc1.4D4028', 'avc1.42E01E']
+  const probeBitrate = compress
+    ? Math.min(options!.bitrateMax ?? 8_000_000, Math.max(options!.bitrateMin ?? 1_500_000, Math.round(probeWidth * probeHeight * srcFramerate * (options!.bitrateFactor ?? 0.08))))
+    : Math.min(8_000_000, Math.max(1_200_000, Math.round(probeWidth * probeHeight * srcFramerate * 0.08)))
   let encoderCodec: string | undefined
-  for (const codec of candidates) {
-    const support = await VideoEncoder.isConfigSupported({ codec, width: probeWidth, height: probeHeight })
+  for (const candidate of avcHighCandidates(probeWidth, probeHeight, srcFramerate)) {
+    let support
+    try {
+      support = await VideoEncoder.isConfigSupported({
+        codec: candidate,
+        width: probeWidth,
+        height: probeHeight,
+        bitrate: probeBitrate,
+        framerate: srcFramerate,
+      })
+    } catch {
+      continue
+    }
     if (support.supported) {
-      encoderCodec = codec
+      encoderCodec = candidate
       break
     }
   }
@@ -598,7 +615,7 @@ export async function transcodeToTracks(
   const totalVideoUs = videoPackets.length
     ? videoPackets[videoPackets.length - 1].timestampUs + videoPackets[videoPackets.length - 1].durationUs
     : 1
-  const bitrate = Math.min(8_000_000, Math.max(1_200_000, Math.round((width || 640) * (height || 360) * 30 * 0.08)))
+  const bitrate = probeBitrate
 
   // 音频和视频独立转码，避免在视频编码结束后才开始处理整条音轨。
   const [videoResult, audioResult] = await Promise.allSettled([
@@ -662,7 +679,7 @@ export async function transcodeToTracks(
         width: target.width,
         height: target.height,
         bitrate,
-        framerate: 30,
+        framerate: srcFramerate,
         avc: { format: 'avc' },
         latencyMode: 'quality',
       })
@@ -671,22 +688,28 @@ export async function transcodeToTracks(
       const videoDecoder = new VideoDecoder({
         output: (frame) => {
           try {
-            // 显示 = 对编码帧逆时针旋转 angle×90°；canvas.rotate 正值视觉顺时针，故取负。
-            const cw = frame.codedWidth
-            const ch = frame.codedHeight
-            const scale = angle % 2 === 1 ? target.width / ch : target.width / cw
-            ctx.fillStyle = '#000'
-            ctx.fillRect(0, 0, canvas.width, canvas.height)
-            ctx.save()
-            ctx.translate(canvas.width / 2, canvas.height / 2)
-            ctx.rotate((-angle * Math.PI) / 2)
-            ctx.drawImage(frame, (-cw * scale) / 2, (-ch * scale) / 2, cw * scale, ch * scale)
-            ctx.restore()
-            const scaled = new VideoFrame(canvas, { timestamp: frame.timestamp, duration: frame.duration || undefined })
             try {
-              videoEncoder.encode(scaled, { keyFrame: done % 60 === 0 })
-            } finally {
-              scaled.close()
+              // 显示 = 对编码帧逆时针旋转 angle×90°；canvas.rotate 正值视觉顺时针，故取负。
+              const cw = frame.codedWidth
+              const ch = frame.codedHeight
+              const scale = angle % 2 === 1 ? target.width / ch : target.width / cw
+              ctx.fillStyle = '#000'
+              ctx.fillRect(0, 0, canvas.width, canvas.height)
+              ctx.save()
+              ctx.translate(canvas.width / 2, canvas.height / 2)
+              ctx.rotate((-angle * Math.PI) / 2)
+              ctx.drawImage(frame, (-cw * scale) / 2, (-ch * scale) / 2, cw * scale, ch * scale)
+              ctx.restore()
+              const scaled = new VideoFrame(canvas, { timestamp: frame.timestamp, duration: frame.duration || undefined })
+              try {
+                videoEncoder.encode(scaled, { keyFrame: done % 60 === 0 })
+              } finally {
+                scaled.close()
+              }
+            } catch (e) {
+              // 编码/绘制异常必须就地捕获：从输出回调逃出会让 WebKit 把解码器
+              // 打进错误态，之后的 decode() 报误导性的 "VideoDecoder is not configured"。
+              if (!decodeError) decodeError = e instanceof Error ? e : new Error(String(e))
             }
           } finally {
             frame.close()
@@ -701,14 +724,18 @@ export async function transcodeToTracks(
       videoDecoder.configure(decoderConfig)
       for (const p of videoPackets) {
         if (decodeError) break
-        videoDecoder.decode(
-          new EncodedVideoChunk({
-            type: p.isKey ? 'key' : 'delta',
-            timestamp: p.timestampUs,
-            duration: p.durationUs,
-            data: await resolvePacket(p, sampleReader, videoHasDv),
-          }),
-        )
+        try {
+          videoDecoder.decode(
+            new EncodedVideoChunk({
+              type: p.isKey ? 'key' : 'delta',
+              timestamp: p.timestampUs,
+              duration: p.durationUs,
+              data: await resolvePacket(p, sampleReader, videoHasDv),
+            }),
+          )
+        } catch (e) {
+          if (!decodeError) decodeError = e instanceof Error ? e : new Error(String(e))
+        }
         // 背压只限解码输入队列：输出回调里已逐帧 close，已编码 chunk 落进
         // encodedVideo（体积受输出尺寸约束，安全）。切勿对 encodeQueueSize 阻塞——
         // 输出回调仍会为每个已解码帧调用 encode()，编码慢于解码时会自锁死。
@@ -725,7 +752,8 @@ export async function transcodeToTracks(
       videoEncoder.close()
       canvas.width = canvas.height = 0
       if (decodeError || encodedVideo.length === 0 || !avcC) {
-        throw new LivePhotoMakerError('videoUnsupported')
+        // 带上原始异常：弹框可展示真实原因（level 超预算、编码器格式等）。
+        throw decodeError ?? new LivePhotoMakerError('videoUnsupported')
       }
       return {
         handler: 'vide',
@@ -758,8 +786,8 @@ export async function transcodeToTracks(
           codec: 'hvc1.2.4.L153.B0',
           width: w,
           height: h,
-          bitrate: Math.min(25_000_000, Math.max(8_000_000, Math.round(w * h * 30 * 0.1))),
-          framerate: 30,
+          bitrate: Math.min(25_000_000, Math.max(8_000_000, Math.round(w * h * srcFramerate * 0.1))),
+          framerate: srcFramerate,
           latencyMode: 'quality',
         }
         try {
@@ -802,7 +830,7 @@ export async function transcodeToTracks(
         width: w,
         height: h,
         bitrate,
-        framerate: 30,
+        framerate: srcFramerate,
         avc: { format: 'avc' },
         latencyMode: 'quality',
       })
@@ -813,6 +841,8 @@ export async function transcodeToTracks(
       output: (frame) => {
         try {
           videoEncoder.encode(frame, { keyFrame: done % 60 === 0 })
+        } catch (e) {
+          if (!decodeError) decodeError = e instanceof Error ? e : new Error(String(e))
         } finally {
           frame.close()
           done++
@@ -826,14 +856,18 @@ export async function transcodeToTracks(
     videoDecoder.configure(decoderConfig)
     for (const p of videoPackets) {
       if (decodeError) break
-      videoDecoder.decode(
-        new EncodedVideoChunk({
-          type: p.isKey ? 'key' : 'delta',
-          timestamp: p.timestampUs,
-          duration: p.durationUs,
-          data: await resolvePacket(p, sampleReader, videoHasDv),
-        }),
-      )
+      try {
+        videoDecoder.decode(
+          new EncodedVideoChunk({
+            type: p.isKey ? 'key' : 'delta',
+            timestamp: p.timestampUs,
+            duration: p.durationUs,
+            data: await resolvePacket(p, sampleReader, videoHasDv),
+          }),
+        )
+      } catch (e) {
+        if (!decodeError) decodeError = e instanceof Error ? e : new Error(String(e))
+      }
       // 背压：仅解码输入侧（同上，避免对 encodeQueueSize 阻塞导致自锁）。
       if (videoDecoder.decodeQueueSize > 24) {
         await new Promise<void>((resolve) => {
@@ -847,7 +881,7 @@ export async function transcodeToTracks(
     await videoEncoder.flush()
     videoEncoder.close()
     if (decodeError || encodedVideo.length === 0 || !codecDesc) {
-      throw new LivePhotoMakerError('videoUnsupported')
+      throw decodeError ?? new LivePhotoMakerError('videoUnsupported')
     }
 
     const sampleEntry = useHevc
@@ -944,6 +978,51 @@ async function resolvePacket(
   const data = p.data ?? await reader.get(p.offset ?? 0, p.size)
   if (stripDvRpu && sampleHasRpu(data)) return stripRpu(data)
   return data
+}
+
+// ---------------------------------------------------------------- H.264 编码器能力
+
+/** 源平均帧率（按样本时长合计估算），限幅 1–120；不可估算时取 fallback。 */
+export function estimateFramerate(
+  packets: { durationUs: number }[],
+  fallback = 30,
+): number {
+  if (packets.length < 2) return fallback
+  const totalUs = packets.reduce((sum, p) => sum + p.durationUs, 0)
+  if (!Number.isFinite(totalUs) || totalUs <= 0) return fallback
+  return Math.min(120, Math.max(1, Math.round((packets.length * 1e6) / totalUs)))
+}
+
+/** 各 H.264 level 的宏块预算（level_idc → [maxFS 宏块/帧, maxMBPS 宏块/秒]），ISO 14496-10 Table A-1。 */
+const AVC_LEVEL_BUDGETS: [number, number, number][] = [
+  [30, 1620, 40500],
+  [31, 3600, 108000],
+  [40, 8192, 245760],
+  [42, 8704, 522240],
+  [50, 22080, 589824],
+  [51, 36864, 983040],
+  [52, 36864, 2073600],
+]
+
+/** 满足 分辨率×帧率 的最小 level_idc（十六进制两位，如 42 → "2A"）。 */
+export function minAvcLevelHex(width: number, height: number, framerate: number): string {
+  const mbFrames = Math.ceil(width / 16) * Math.ceil(height / 16)
+  const mbPerSec = mbFrames * Math.max(1, framerate)
+  for (const [level, maxFS, maxMBPS] of AVC_LEVEL_BUDGETS) {
+    if (mbFrames <= maxFS && mbPerSec <= maxMBPS) return level.toString(16).padStart(2, '0')
+  }
+  return '34' // 52
+}
+
+/** High profile 候选 codec：从所需最小 level 起逐级升高（VideoToolbox 对超预算直接报错）。 */
+export function avcHighCandidates(width: number, height: number, framerate: number): string[] {
+  const hexToLevel = (h: string) => parseInt(h, 16)
+  const wanted = hexToLevel(minAvcLevelHex(width, height, framerate))
+  const ladder = [30, 31, 40, 42, 50, 51, 52].filter((l) => l >= wanted)
+  const codes = ladder.map((l) => `avc1.6400${l.toString(16).padStart(2, '0')}`)
+  // 兜底：更保守的主 profile 旧候选链（历史行为）
+  codes.push('avc1.4D4028', 'avc1.42E01E')
+  return codes
 }
 
 // ---------------------------------------------------------------- 混合重封装（HDR 保真）
