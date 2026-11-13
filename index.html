@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>实况照片制作 · 把长视频转换为实况照片</title>
+    <meta name="description" content="在 Safari 中把长视频转换为实况照片，最长 3 分钟。可从视频选取封面，也可上传照片。素材在浏览器本地处理。" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="实况照片制作" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:title" content="实况照片制作 · 把长视频转换为实况照片" />
+    <meta property="og:description" content="把长视频转换为实况照片，最长 3 分钟。自由选封面，素材无需上传。" />
+    <meta property="og:url" content="https://jerryt92.top/live-photo-creator/" />
+    <meta property="og:image" content="https://jerryt92.top/live-photo-creator/share-card.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="2400" />
+    <meta property="og:image:height" content="1260" />
+    <meta property="og:image:alt" content="实况照片制作分享卡片：镜头标志、「把长视频转换为实况照片」标语与视频变实况照片的 LIVE 取景画面" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="实况照片制作 · 把长视频转换为实况照片" />
+    <meta name="twitter:description" content="把长视频转换为实况照片，最长 3 分钟。自由选封面，素材无需上传。" />
+    <meta name="twitter:image" content="https://jerryt92.top/live-photo-creator/share-card.png" />
+    <meta name="twitter:image:alt" content="实况照片制作分享卡片：镜头标志、「把长视频转换为实况照片」标语与视频变实况照片的 LIVE 取景画面" />
+    <meta name="theme-color" content="#f4f1ec" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0e1015" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <script>
+      // Apply the persisted theme before first paint to avoid a flash.
+      ;(function () {
+        try {
+          var mode = localStorage.getItem('lpc.theme') || 'auto'
+          var dark =
+            mode === 'dark' ||
+            (mode === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+          document.documentElement.dataset.themeMode = mode
+        } catch (e) {
+          document.documentElement.dataset.theme = 'light'
+        }
+      })()
+    </script>
+    <script
+      async
+      src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1847497251906788"
+      crossorigin="anonymous"
+    ></script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

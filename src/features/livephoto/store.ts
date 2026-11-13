@@ -1,0 +1,231 @@
+/**
+ * 制作页状态与流程编排（对应 iOS 端 LivePhotoMakerViewModel）。
+ */
+import { computed, reactive } from 'vue'
+import {
+  LivePhotoMakerError,
+  type LivePhotoBuild,
+  type MakerErrorCode,
+  type MediaItem,
+  type MediaKind,
+  type MetadataSource,
+  type Phase,
+} from './models'
+import { importPhoto, importVideo, captureVideoThumbnail, captureVideoCover, captureFirstVideoCover, type DecodedPhoto, type VideoAnalysis } from './services/media'
+import { buildLivePhoto } from './services/builder'
+import { irotAngleFromMatrix } from './services/mov'
+import { extractHevcKeyframe } from './services/hevc-still'
+import type { HevcStill } from './models'
+
+export interface MakerState {
+  photo: MediaItem | null
+  video: MediaItem | null
+  metadataSource: MetadataSource
+  importingKind: MediaKind | null
+  phase: Phase
+  progress: number
+  errorCode: MakerErrorCode | null
+  result: LivePhotoBuild | null
+}
+
+const state = reactive<MakerState>({
+  photo: null,
+  video: null,
+  metadataSource: 'photo',
+  importingKind: null,
+  phase: 'idle',
+  progress: 0,
+  errorCode: null,
+  result: null,
+})
+
+let decodedPhoto: DecodedPhoto | null = null
+let videoAnalysis: VideoAnalysis | null = null
+let coverTime: number | undefined
+/** 自动封面在途记录：同一视频去重；换视频后旧结果自动作废（见 setVideoCover）。 */
+let autoCoverFile: File | null = null
+
+export function useMaker() {
+  const isWorking = computed(() => state.phase !== 'idle' || state.importingKind !== null)
+  const canCompose = computed(
+    () => state.photo !== null && state.video !== null && state.phase === 'idle' && state.importingKind === null,
+  )
+  const selectedMetadata = computed(() => {
+    const source = state.metadataSource === 'photo' ? state.photo : state.video
+    return source?.metadata ?? {}
+  })
+
+  function clearResult(): void {
+    if (state.result) {
+      URL.revokeObjectURL(state.result.photoUrl)
+      URL.revokeObjectURL(state.result.videoUrl)
+      state.result = null
+    }
+  }
+
+  async function selectPhoto(file: File): Promise<void> {
+    if (state.importingKind || isWorking.value) return
+    state.importingKind = 'photo'
+    try {
+      const { item, decoded } = await importPhoto(file)
+      clearResult()
+      state.photo = item
+      decodedPhoto = decoded
+      coverTime = undefined
+    } catch (e) {
+      state.errorCode = e instanceof LivePhotoMakerError ? e.code : 'photoUnreadable'
+    } finally {
+      state.importingKind = null
+    }
+  }
+
+  async function setVideoCover(video?: HTMLVideoElement, automatic = false): Promise<void> {
+    if (!state.video) return
+    // 全程使用进入时捕获的素材引用，避免 await 期间换视频导致新旧混用。
+    const sourceFile = state.video.file
+    const sourceMetadata = state.video.metadata
+    const analysis = videoAnalysis
+    const time = video?.currentTime ?? 0
+    try {
+      // 可重封装的 hvc1 HDR 源：优先比特级抽取目标时刻的 IDR 关键帧（零转码保 HDR）。
+      const videoTrack = analysis?.movie?.tracks.find((t) => t.handler === 'vide')
+      let prebuilt: HevcStill | undefined
+      if (analysis?.remuxable && analysis.movie && videoTrack) {
+        prebuilt = await extractHevcKeyframe(
+          sourceFile,
+          videoTrack,
+          time,
+          irotAngleFromMatrix(videoTrack.matrix),
+        )
+      }
+      const irot = irotAngleFromMatrix(videoTrack?.matrix)
+      const { item, decoded } = video
+        ? await captureVideoCover(video, sourceMetadata, irot, prebuilt)
+        : await captureFirstVideoCover(sourceFile, sourceMetadata, irot, prebuilt)
+      // 自动封面让位/作废：期间用户已有照片，或视频已更换。
+      if (automatic && (state.photo || state.video?.file !== sourceFile)) return
+      clearResult()
+      decodedPhoto = decoded
+      coverTime = time
+      state.photo = item
+    } catch {
+      if (!automatic) state.errorCode = 'photoUnreadable'
+    }
+  }
+
+  async function selectCoverFrame(video?: HTMLVideoElement, automatic = false): Promise<void> {
+    if (isWorking.value) return
+    // 自动封面不占用导入态（不显示「正在导入…」转圈）：它是系统后台行为，
+    // 且高清源需新建元素冷解码，耗时明显；手动选帧复用已加载元素、瞬时完成才值得转圈反馈。
+    if (automatic) {
+      const file = state.video?.file
+      if (!file || file === autoCoverFile) return
+      autoCoverFile = file
+      try {
+        await setVideoCover(video, true)
+      } finally {
+        if (autoCoverFile === file) autoCoverFile = null
+      }
+      return
+    }
+    state.importingKind = 'photo'
+    try {
+      await setVideoCover(video, false)
+    } finally {
+      state.importingKind = null
+    }
+  }
+
+  async function selectVideo(file: File): Promise<void> {
+    if (state.importingKind || isWorking.value) return
+    state.importingKind = 'video'
+    try {
+      const { item, analysis } = await importVideo(file)
+      clearResult()
+      state.video = item
+      videoAnalysis = analysis
+      if (!state.photo || coverTime !== undefined) {
+        state.photo = null
+        decodedPhoto = null
+        coverTime = undefined
+      }
+      // 缩略图异步抓取，不阻塞导入（HEVC 在部分浏览器无法解码时静默降级）
+      void captureVideoThumbnail(file, analysis.duration).then((url) => {
+        if (url && state.video?.file === file) state.video.previewUrl = url
+      })
+    } catch (e) {
+      state.errorCode = e instanceof LivePhotoMakerError ? e.code : 'videoUnreadable'
+    } finally {
+      state.importingKind = null
+    }
+  }
+
+  function removePhoto(): void {
+    if (isWorking.value) return
+    state.photo = null
+    decodedPhoto = null
+    coverTime = undefined
+    clearResult()
+  }
+
+  function removeVideo(): void {
+    if (isWorking.value) return
+    state.video = null
+    videoAnalysis = null
+    if (coverTime !== undefined) removePhoto()
+    clearResult()
+  }
+
+  async function compose(): Promise<void> {
+    if (!canCompose.value || !decodedPhoto || !videoAnalysis || !state.photo || !state.video) return
+    state.phase = 'composing'
+    state.progress = 0
+    try {
+      const build = await buildLivePhoto({
+        photo: state.photo,
+        decodedPhoto,
+        video: state.video,
+        analysis: videoAnalysis,
+        metadataSource: state.metadataSource,
+        coverTime,
+        onProgress: ({ phase, progress }) => {
+          state.phase = phase
+          state.progress = progress
+        },
+      })
+      state.result = build
+      state.phase = 'idle'
+      state.progress = 0
+    } catch (e) {
+      state.phase = 'idle'
+      state.progress = 0
+      state.errorCode = e instanceof LivePhotoMakerError ? e.code : 'compositionFailed'
+    }
+  }
+
+  function reset(): void {
+    if (isWorking.value) return
+    removePhoto()
+    removeVideo()
+    state.metadataSource = 'photo'
+  }
+
+  function dismissError(): void {
+    state.errorCode = null
+  }
+
+  return {
+    state,
+    isWorking,
+    canCompose,
+    selectedMetadata,
+    selectPhoto,
+    selectCoverFrame,
+    selectVideo,
+    removePhoto,
+    removeVideo,
+    compose,
+    reset,
+    dismissError,
+  }
+}

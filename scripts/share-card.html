@@ -1,0 +1,342 @@
+<!doctype html>
+<!--
+  分享卡片设计稿（1200×630）。
+  由 scripts/generate-share-card.mjs 截图生成 public/share-card.png。
+  视觉与 src/styles/tokens.css（浅色）保持一致；logo 与 public/favicon.svg 完全一致；
+  文案与 src/i18n/zh-Hans.ts 及 index.html 的 og:description 保持一致。
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      @font-face {
+        font-family: 'Sora';
+        font-weight: 400;
+        src: url('../node_modules/@fontsource/sora/files/sora-latin-400-normal.woff2') format('woff2');
+      }
+      @font-face {
+        font-family: 'Sora';
+        font-weight: 600;
+        src: url('../node_modules/@fontsource/sora/files/sora-latin-600-normal.woff2') format('woff2');
+      }
+      @font-face {
+        font-family: 'Sora';
+        font-weight: 700;
+        src: url('../node_modules/@fontsource/sora/files/sora-latin-700-normal.woff2') format('woff2');
+      }
+      @font-face {
+        font-family: 'Sora';
+        font-weight: 800;
+        src: url('../node_modules/@fontsource/sora/files/sora-latin-800-normal.woff2') format('woff2');
+      }
+
+      :root {
+        --font-display: 'Sora', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+          'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+        --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+          'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+        --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+
+        --bg: #f4f1ec;
+        --surface: #fffdf9;
+        --ink: #1b1d23;
+        --ink-2: #585d68;
+        --ink-3: #979ca8;
+        --line: rgba(27, 29, 35, 0.1);
+        --line-strong: rgba(27, 29, 35, 0.18);
+        --accent: #e8431f;
+        --live-bg: #ffc53d;
+        --live-ink: #241a00;
+        --stage-bg: #101218;
+        --stage-ink: #f2f3f7;
+        --shadow-2: 0 2px 6px rgba(27, 29, 35, 0.07), 0 16px 40px rgba(27, 29, 35, 0.12);
+      }
+
+      * { box-sizing: border-box; margin: 0; }
+
+      html, body { width: 1200px; height: 630px; overflow: hidden; }
+
+      body {
+        position: relative;
+        font-family: var(--font-body);
+        color: var(--ink);
+        background: var(--bg);
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+
+      /* 与 base.css 相同的环境光（颗粒在分享尺寸下不可见，省略以控制 PNG 体积） */
+      body::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(52rem 34rem at 85% -8%, rgba(232, 67, 31, 0.09), transparent 62%),
+          radial-gradient(44rem 30rem at -12% 22%, rgba(47, 127, 214, 0.07), transparent 60%),
+          radial-gradient(40rem 30rem at 50% 118%, rgba(255, 197, 61, 0.1), transparent 65%);
+      }
+
+      .card {
+        position: relative;
+        width: 1200px;
+        height: 630px;
+        padding: 58px 64px;
+        display: flex;
+        gap: 48px;
+      }
+
+      /* ---------- 左：品牌 + 文案 ---------- */
+      .copy {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .brand { display: flex; align-items: center; gap: 18px; }
+      .brand-mark { width: 74px; height: 74px; flex-shrink: 0; filter: drop-shadow(0 6px 16px rgba(14, 16, 21, 0.22)); }
+      .brand-name {
+        font-family: var(--font-display);
+        font-size: 27px;
+        font-weight: 700;
+        letter-spacing: -0.015em;
+        line-height: 1.2;
+      }
+      .brand-latin {
+        margin-top: 5px;
+        font-family: var(--font-display);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.26em;
+        color: var(--ink-3);
+      }
+
+      .headline {
+        margin-top: 46px;
+        font-family: var(--font-display);
+        font-size: 60px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        line-height: 1.16;
+      }
+      .headline .hl {
+        background: linear-gradient(transparent 64%, rgba(255, 197, 61, 0.55) 64%, rgba(255, 197, 61, 0.55) 92%, transparent 92%);
+      }
+
+      .desc {
+        margin-top: 20px;
+        max-width: 560px;
+        font-size: 21px;
+        line-height: 1.65;
+        color: var(--ink-2);
+      }
+      .desc span { display: block; }
+
+      .chips { margin-top: auto; display: flex; gap: 10px; }
+      .chip {
+        padding: 8px 16px;
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        background: var(--surface);
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--ink-2);
+      }
+      .chip .dot { color: var(--accent); }
+
+      .url {
+        margin-top: 18px;
+        font-family: var(--font-mono);
+        font-size: 14px;
+        letter-spacing: -0.01em;
+        color: var(--ink-3);
+      }
+      .url b { color: var(--accent); font-weight: 600; }
+
+      /* ---------- 右：视频 → 实况照片 ---------- */
+      .visual { position: relative; width: 440px; flex-shrink: 0; }
+
+      .rings { position: absolute; left: 50%; top: 50%; translate: -50% -50%; }
+      .rings .r1 {
+        position: absolute; left: 50%; top: 50%; translate: -50% -50%;
+        width: 470px; height: 470px; border-radius: 50%;
+        border: 2.5px dashed rgba(232, 67, 31, 0.16);
+      }
+      .rings .r2 {
+        position: absolute; left: 50%; top: 50%; translate: -50% -50%;
+        width: 330px; height: 330px; border-radius: 50%;
+        border: 2.5px solid rgba(255, 197, 61, 0.28);
+      }
+
+      .frame {
+        position: absolute;
+        width: 330px;
+        border-radius: 20px;
+        box-shadow: var(--shadow-2);
+      }
+
+      /* 后：视频帧 */
+      .frame.video {
+        left: 100px; top: 0;
+        transform: rotate(6deg);
+        background: var(--stage-bg);
+        border: 1px solid rgba(242, 243, 247, 0.14);
+        padding: 10px;
+      }
+      .frame.video .shot { position: relative; border-radius: 12px; overflow: hidden; }
+      .frame.video .shot svg { display: block; width: 100%; }
+      .frame.video .shade { position: absolute; inset: 0; background: rgba(10, 12, 16, 0.45); }
+      .frame.video .play {
+        position: absolute; left: 50%; top: 50%; translate: -50% -50%;
+        width: 58px; height: 58px; border-radius: 50%;
+        border: 2px dashed rgba(242, 243, 247, 0.8);
+        display: grid; place-items: center;
+      }
+      .frame.video .play::after {
+        content: '';
+        margin-left: 5px;
+        border-left: 16px solid rgba(242, 243, 247, 0.92);
+        border-top: 10px solid transparent;
+        border-bottom: 10px solid transparent;
+      }
+      .frame.video .tc {
+        position: absolute; right: 12px; bottom: 10px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: rgba(242, 243, 247, 0.85);
+        background: rgba(10, 12, 16, 0.55);
+        border: 1px solid rgba(242, 243, 247, 0.16);
+        border-radius: 999px;
+        padding: 3px 9px;
+      }
+      .frame.video .meta {
+        display: flex; justify-content: space-between;
+        padding: 9px 4px 2px;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: rgba(242, 243, 247, 0.55);
+      }
+
+      /* 前：实况照片 */
+      .frame.live {
+        left: 6px; top: 210px;
+        transform: rotate(-3deg);
+        background: var(--surface);
+        border: 1px solid var(--line);
+        padding: 10px;
+      }
+      .frame.live .shot { position: relative; border-radius: 12px; overflow: hidden; }
+      .frame.live .shot svg { display: block; width: 100%; }
+
+      .corners { position: absolute; inset: 12px; opacity: 0.9; }
+      .c {
+        position: absolute; width: 18px; height: 18px;
+        border: 2px solid rgba(242, 243, 247, 0.9);
+        filter: drop-shadow(0 1px 2px rgba(10, 12, 16, 0.4));
+      }
+      .c.tr { top: 0; right: 0; border-left: none; border-bottom: none; border-top-right-radius: 6px; }
+      .c.bl { bottom: 0; left: 0; border-right: none; border-top: none; border-bottom-left-radius: 6px; }
+      .c.br { bottom: 0; right: 0; border-left: none; border-top: none; border-bottom-right-radius: 6px; }
+
+      .badge {
+        position: absolute; top: 14px; left: 14px;
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 5px 11px;
+        border-radius: 999px;
+        background: var(--live-bg);
+        color: var(--live-ink);
+        font-family: var(--font-display);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+      }
+      .badge-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+      .frame.live .meta {
+        display: flex; justify-content: space-between;
+        padding: 9px 4px 2px;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--ink-3);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="copy">
+        <div class="brand">
+          <!-- 与 public/favicon.svg 完全一致 -->
+          <svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true">
+            <rect width="64" height="64" rx="14" fill="#0e1015"/>
+            <circle cx="32" cy="32" r="21" fill="none" stroke="#ff4d2e" stroke-width="2.5" stroke-dasharray="4 5" stroke-linecap="round"/>
+            <circle cx="32" cy="32" r="13.5" fill="none" stroke="#ffc53d" stroke-width="2.5"/>
+            <circle cx="32" cy="32" r="6" fill="#ff4d2e"/>
+          </svg>
+          <div>
+            <div class="brand-name">实况照片制作</div>
+            <div class="brand-latin">LIVE PHOTO CREATOR</div>
+          </div>
+        </div>
+
+        <h1 class="headline">把长视频<br />转换为<span class="hl">实况照片</span>。</h1>
+        <p class="desc"><span>用 Safari 打开，自由选取封面，素材无需上传。</span></p>
+
+        <div class="chips">
+          <span class="chip"><span class="dot">●</span> Safari 专用</span>
+          <span class="chip">最长 3 分钟</span>
+          <span class="chip">素材本地处理</span>
+        </div>
+        <div class="url"><b>↗</b> jerryt92.top/live-photo-creator</div>
+      </div>
+
+      <div class="visual">
+        <div class="rings"><span class="r1"></span><span class="r2"></span></div>
+
+        <div class="frame video">
+          <div class="shot">
+            <svg viewBox="0 0 332 249" aria-hidden="true">
+              <defs>
+                <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#ffedd0"/>
+                  <stop offset="0.55" stop-color="#ffc38a"/>
+                  <stop offset="1" stop-color="#ff8f66"/>
+                </linearGradient>
+              </defs>
+              <rect width="332" height="249" fill="url(#sky)"/>
+              <circle cx="208" cy="92" r="46" fill="#ffc53d" opacity="0.35"/>
+              <circle cx="208" cy="92" r="30" fill="#ffc53d"/>
+              <path d="M0 168 Q 88 118 176 166 T 332 148 V249 H0 Z" fill="#e8431f" opacity="0.85"/>
+              <path d="M0 204 Q 118 158 216 202 T 332 192 V249 H0 Z" fill="#1b1d23"/>
+            </svg>
+            <div class="shade"></div>
+            <div class="play"></div>
+            <span class="tc">00:03.0</span>
+          </div>
+          <div class="meta"><span>H.264</span><span>VIDEO.MOV</span></div>
+        </div>
+
+        <div class="frame live">
+          <div class="shot">
+            <svg viewBox="0 0 332 249" aria-hidden="true">
+              <defs>
+                <linearGradient id="sky2" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#ffedd0"/>
+                  <stop offset="0.55" stop-color="#ffc38a"/>
+                  <stop offset="1" stop-color="#ff8f66"/>
+                </linearGradient>
+              </defs>
+              <rect width="332" height="249" fill="url(#sky2)"/>
+              <circle cx="208" cy="92" r="46" fill="#ffc53d" opacity="0.35"/>
+              <circle cx="208" cy="92" r="30" fill="#ffc53d"/>
+              <path d="M0 168 Q 88 118 176 166 T 332 148 V249 H0 Z" fill="#e8431f" opacity="0.85"/>
+              <path d="M0 204 Q 118 158 216 202 T 332 192 V249 H0 Z" fill="#1b1d23"/>
+            </svg>
+            <div class="corners"><span class="c tr"></span><span class="c bl"></span><span class="c br"></span></div>
+            <span class="badge"><span class="badge-dot"></span>LIVE</span>
+          </div>
+          <div class="meta"><span>IMG_2043.HEIC</span><span>1.5s</span></div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
