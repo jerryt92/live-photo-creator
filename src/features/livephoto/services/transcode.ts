@@ -709,6 +709,9 @@ export async function transcodeToTracks(
             data: await resolvePacket(p, sampleReader, videoHasDv),
           }),
         )
+        // 背压只限解码输入队列：输出回调里已逐帧 close，已编码 chunk 落进
+        // encodedVideo（体积受输出尺寸约束，安全）。切勿对 encodeQueueSize 阻塞——
+        // 输出回调仍会为每个已解码帧调用 encode()，编码慢于解码时会自锁死。
         if (videoDecoder.decodeQueueSize > 24) {
           await new Promise<void>((resolve) => {
             const check = () => (videoDecoder.decodeQueueSize <= 8 ? resolve() : setTimeout(check, 8))
@@ -831,7 +834,7 @@ export async function transcodeToTracks(
           data: await resolvePacket(p, sampleReader, videoHasDv),
         }),
       )
-      // 背压：避免解码队列无限增长
+      // 背压：仅解码输入侧（同上，避免对 encodeQueueSize 阻塞导致自锁）。
       if (videoDecoder.decodeQueueSize > 24) {
         await new Promise<void>((resolve) => {
           const check = () => (videoDecoder.decodeQueueSize <= 8 ? resolve() : setTimeout(check, 8))
