@@ -19,6 +19,7 @@ export const zhHans: Record<MessageKey, string> = {
   'workflow.export': '导出',
   'browserGate.safariTitle': '请在 Safari 中打开',
   'browserGate.safariGuide': '复制链接，然后粘贴到 Safari 的地址栏。',
+  'browserGate.wechatGuide': '点微信右上角的「⋯」，选择「在浏览器打开」。如果出现浏览器列表，选 Safari。也可以复制链接，粘贴到 Safari 的地址栏。',
   'browserGate.unsupportedTitle': '不支持非 Apple 设备',
   'browserGate.unsupportedGuide': '请在 Apple 设备上使用 Safari 打开此页面，制作实况照片。',
   'browserGate.copy': '复制链接',

@@ -17,6 +17,7 @@ export const en = {
   'workflow.export': 'Export',
   'browserGate.safariTitle': 'Open this page in Safari',
   'browserGate.safariGuide': 'Copy the link and paste it into the Safari address bar.',
+  'browserGate.wechatGuide': 'Tap ⋯ in the top-right corner of WeChat and choose Open in Browser. Select Safari if prompted. You can also copy the link and paste it into Safari.',
   'browserGate.unsupportedTitle': 'Non-Apple devices are not supported',
   'browserGate.unsupportedGuide': 'Open this page in Safari on an Apple device to create a Live Photo.',
   'browserGate.copy': 'Copy link',

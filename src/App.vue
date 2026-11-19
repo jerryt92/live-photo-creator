@@ -59,9 +59,10 @@ const userAgent = navigator.userAgent
 const isMac = /\bMacintosh\b/i.test(userAgent)
 const isIOS = /\b(?:iPhone|iPad|iPod)\b/i.test(userAgent) ||
   (isMac && navigator.maxTouchPoints > 1)
-const isSafari = navigator.vendor === 'Apple Computer, Inc.' &&
+const isWeChat = /\b(?:MicroMessenger|WeChat|Weixin)\b/i.test(userAgent)
+const isSafari = !isWeChat && navigator.vendor === 'Apple Computer, Inc.' &&
   /\bVersion\/[^ ]+.*\bSafari\//.test(userAgent) &&
-  !/\b(?:Chrome|Chromium|CriOS|FxiOS|Edg(?:e|A|iOS)?|OPR|OPiOS|DuckDuckGo|YaBrowser|GSA|MicroMessenger|QQBrowser|Instagram|FBAN|FBAV|Line|Brave)\b/i.test(userAgent) &&
+  !/\b(?:Chrome|Chromium|CriOS|FxiOS|Edg(?:e|A|iOS)?|OPR|OPiOS|DuckDuckGo|YaBrowser|GSA|QQBrowser|Instagram|FBAN|FBAV|Line|Brave)\b/i.test(userAgent) &&
   !('brave' in navigator)
 const unsupportedDevice = !isMac && !isIOS
 // 非 Apple 设备 → 不支持提示；Apple 设备但非 Safari → 全屏 Safari 引导（Mac 同样适用）。
@@ -124,7 +125,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <BrowserRequired v-if="browserRequired" :unsupported="unsupportedDevice" />
+  <BrowserRequired v-if="browserRequired" :unsupported="unsupportedDevice" :wechat="isWeChat" />
   <AppHeader v-else />
 
   <main v-if="!browserRequired" class="shell">

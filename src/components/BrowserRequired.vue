@@ -11,7 +11,7 @@ import { useTheme } from '../composables/useTheme'
 import Icon from './Icon.vue'
 import safariLogo from '../assets/safari-logo.webp'
 
-defineProps<{ unsupported: boolean }>()
+defineProps<{ unsupported: boolean; wechat: boolean }>()
 const { t } = useI18n()
 useTheme()
 
@@ -25,17 +25,42 @@ const showAddress = ref(false)
 
 onMounted(() => title.value?.focus({ preventScroll: true }))
 
-async function copyLink(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(pageUrl)
-    copied.value = true
-  } catch {
-    // 剪贴板不可用（部分 WebView / 非安全上下文）→ 展示可长按复制的地址。
-    showAddress.value = true
-    await nextTick()
-    address.value?.focus()
-    address.value?.select()
+async function copyLink(event: MouseEvent): Promise<void> {
+  const button = event.currentTarget as HTMLButtonElement
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(pageUrl)
+      copied.value = true
+      showAddress.value = false
+      return
+    } catch {
+      // 剪贴板接口拒绝写入时，尝试通过选区复制。
+    }
   }
+
+  const selection = document.createElement('input')
+  selection.value = pageUrl
+  selection.readOnly = true
+  selection.style.cssText = 'position: fixed; top: 0; left: 0; opacity: 0;'
+  document.body.append(selection)
+  try {
+    selection.focus({ preventScroll: true })
+    selection.select()
+    copied.value = document.execCommand('copy')
+  } catch {
+    copied.value = false
+  } finally {
+    selection.remove()
+  }
+
+  showAddress.value = !copied.value
+  if (copied.value) {
+    button.focus()
+    return
+  }
+  await nextTick()
+  address.value?.focus()
+  address.value?.select()
 }
 </script>
 
@@ -86,7 +111,9 @@ async function copyLink(): Promise<void> {
         {{ t(unsupported ? 'browserGate.unsupportedTitle' : 'browserGate.safariTitle') }}
       </h1>
       <p id="browser-gate-guide" class="gate-guide">
-        {{ t(unsupported ? 'browserGate.unsupportedGuide' : 'browserGate.safariGuide') }}
+        {{ t(unsupported
+          ? 'browserGate.unsupportedGuide'
+          : wechat ? 'browserGate.wechatGuide' : 'browserGate.safariGuide') }}
       </p>
 
       <button
